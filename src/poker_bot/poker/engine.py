@@ -127,7 +127,6 @@ class PokerEngine:
     def get_decision_request(
         self,
         seat_id: str,
-        recent_events: Iterable[GameEvent],
         validation_error: ActionValidationError | None = None,
     ) -> DecisionRequest:
         return DecisionRequest(
@@ -135,7 +134,6 @@ class PokerEngine:
             player_view=self.get_player_view(seat_id),
             public_table_view=self.get_public_table_view(),
             legal_actions=self.get_legal_actions(seat_id),
-            recent_events=tuple(recent_events),
             validation_error=validation_error,
         )
 

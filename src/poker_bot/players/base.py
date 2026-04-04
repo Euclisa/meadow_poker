@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from poker_bot.types import DecisionRequest, GameEvent, PlayerAction, PlayerView, PublicTableView
+from poker_bot.types import DecisionRequest, PlayerAction, PlayerUpdate
 
 
 class PlayerAgent(ABC):
@@ -13,11 +13,7 @@ class PlayerAgent(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def notify_terminal(
-        self,
-        events: tuple[GameEvent, ...],
-        view: PlayerView | PublicTableView,
-    ) -> None:
+    async def notify_update(self, update: PlayerUpdate) -> None:
         raise NotImplementedError
 
     @abstractmethod

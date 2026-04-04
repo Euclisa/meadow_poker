@@ -9,10 +9,9 @@ from poker_bot.poker.engine import PokerEngine
 from poker_bot.types import (
     ActionType,
     DecisionRequest,
-    GameEvent,
     PlayerAction,
-    PlayerView,
-    PublicTableView,
+    PlayerUpdate,
+    PlayerUpdateType,
     SeatConfig,
     TableConfig,
 )
@@ -23,21 +22,19 @@ class ScriptedAgent(PlayerAgent):
         self.seat_id = seat_id
         self._actions = list(actions)
         self.decisions: list[DecisionRequest] = []
-        self.terminal_notifications: list[tuple[tuple[GameEvent, ...], PlayerView | PublicTableView]] = []
+        self.update_counts_at_decision: list[int] = []
+        self.updates: list[PlayerUpdate] = []
         self.closed = False
 
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
         self.decisions.append(decision)
+        self.update_counts_at_decision.append(len(self.updates))
         if not self._actions:
             raise AssertionError(f"No scripted action left for {self.seat_id}")
         return self._actions.pop(0)
 
-    async def notify_terminal(
-        self,
-        events: tuple[GameEvent, ...],
-        view: PlayerView | PublicTableView,
-    ) -> None:
-        self.terminal_notifications.append((events, view))
+    async def notify_update(self, update: PlayerUpdate) -> None:
+        self.updates.append(update)
 
     async def close(self) -> None:
         self.closed = True
@@ -91,18 +88,18 @@ def test_orchestrator_only_prompts_acting_seat_and_delivers_event_deltas() -> No
 
     assert len(agent_one.decisions) == 4
     assert len(agent_two.decisions) == 4
-
-    first_p1_events = tuple(event.event_type for event in agent_one.decisions[0].recent_events)
-    first_p2_events = tuple(event.event_type for event in agent_two.decisions[0].recent_events)
-    second_p2_events = tuple(event.event_type for event in agent_two.decisions[1].recent_events)
+    assert agent_one.updates
+    assert agent_two.updates
+    first_p1_events = tuple(event.event_type for event in agent_one.updates[0].events)
+    first_p2_events = tuple(event.event_type for event in agent_two.updates[1].events)
+    second_p2_events = tuple(event.event_type for event in agent_two.updates[2].events)
 
     assert first_p1_events == ("hand_started", "blind_posted", "blind_posted", "street_started")
-    assert first_p2_events[-1] == "action_applied"
-    assert "hand_started" not in second_p2_events
-    assert second_p2_events[:2] == ("action_applied", "street_started")
-    assert second_p2_events[-1] == "bet_updated"
-    assert agent_one.terminal_notifications
-    assert agent_two.terminal_notifications
+    assert agent_one.updates[0].update_type == PlayerUpdateType.TURN_STARTED
+    assert agent_two.updates[0].update_type == PlayerUpdateType.STATE_CHANGED
+    assert first_p2_events == ("action_applied",)
+    assert second_p2_events[0] == "action_applied"
+    assert "street_started" in second_p2_events
     assert agent_one.closed is True
     assert agent_two.closed is True
 
@@ -135,8 +132,7 @@ def test_orchestrator_retries_same_seat_after_invalid_action() -> None:
     assert agent_one.decisions[1].validation_error is not None
     assert agent_one.decisions[1].validation_error.code == "illegal_action"
     assert len(agent_two.decisions) == 4
-    first_p2_events = tuple(event.event_type for event in agent_two.decisions[0].recent_events)
-    assert first_p2_events.count("action_applied") == 1
+    assert agent_one.update_counts_at_decision[1] == agent_one.update_counts_at_decision[0]
 
 
 def test_orchestrator_flushes_terminal_results_for_non_acting_seats() -> None:
@@ -147,15 +143,16 @@ def test_orchestrator_flushes_terminal_results_for_non_acting_seats() -> None:
     asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
 
     assert len(agent_two.decisions) == 0
-    assert agent_one.terminal_notifications
-    assert agent_two.terminal_notifications
+    assert agent_one.updates
+    assert agent_two.updates
     notified_event_types = {
         event.event_type
-        for events, _ in agent_two.terminal_notifications
-        for event in events
+        for update in agent_two.updates
+        for event in update.events
     }
     assert "hand_awarded" in notified_event_types
     assert "hand_completed" in notified_event_types
+    assert any(update.update_type == PlayerUpdateType.HAND_COMPLETED for update in agent_two.updates)
 
 
 def test_orchestrator_flushes_hand_end_events_before_next_hand_prompt() -> None:
@@ -178,17 +175,31 @@ def test_orchestrator_flushes_hand_end_events_before_next_hand_prompt() -> None:
 
     assert len(agent_one.decisions) == 1
     assert len(agent_two.decisions) == 1
-    first_decision_hand_two_events = tuple(
-        event.event_type for event in agent_two.decisions[0].recent_events
-    )
-    first_terminal_for_p2 = tuple(
-        event.event_type for event in agent_two.terminal_notifications[0][0]
-    )
-    assert first_decision_hand_two_events == (
+    hand_completed_updates = [update for update in agent_two.updates if update.update_type == PlayerUpdateType.HAND_COMPLETED]
+    next_hand_updates = [
+        update for update in agent_two.updates if any(event.event_type == "hand_started" and event.payload.get("hand_number") == 2 for event in update.events)
+    ]
+    assert hand_completed_updates
+    assert next_hand_updates
+    assert tuple(event.event_type for event in next_hand_updates[0].events) == (
         "hand_started",
         "blind_posted",
         "blind_posted",
         "street_started",
     )
-    assert "hand_completed" not in first_decision_hand_two_events
-    assert "hand_completed" in first_terminal_for_p2
+
+
+def test_orchestrator_marks_table_completed_updates() -> None:
+    agent_one = ScriptedAgent("p1", actions=[PlayerAction(ActionType.FOLD)])
+    agent_two = ScriptedAgent("p2", actions=[])
+    deck = ("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc")
+    engine = PokerEngine.create_table(
+        TableConfig(deck_factory=PredefinedDeckFactory([deck])),
+        [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
+    )
+    orchestrator = GameOrchestrator(engine, {"p1": agent_one, "p2": agent_two})
+
+    asyncio.run(orchestrator.run(max_hands=2, close_agents=False))
+
+    assert any(update.update_type == PlayerUpdateType.TABLE_COMPLETED for update in agent_one.updates)
+    assert any(update.update_type == PlayerUpdateType.TABLE_COMPLETED for update in agent_two.updates)

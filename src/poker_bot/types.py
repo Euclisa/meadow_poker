@@ -36,6 +36,13 @@ class TelegramTableState(str, Enum):
     CANCELLED = "cancelled"
 
 
+class PlayerUpdateType(str, Enum):
+    STATE_CHANGED = "state_changed"
+    TURN_STARTED = "turn_started"
+    HAND_COMPLETED = "hand_completed"
+    TABLE_COMPLETED = "table_completed"
+
+
 @dataclass(frozen=True, slots=True)
 class TableConfig:
     small_blind: int = 50
@@ -134,8 +141,17 @@ class DecisionRequest:
     player_view: PlayerView
     public_table_view: PublicTableView
     legal_actions: tuple[LegalAction, ...]
-    recent_events: tuple[GameEvent, ...]
     validation_error: ActionValidationError | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PlayerUpdate:
+    update_type: PlayerUpdateType
+    events: tuple[GameEvent, ...]
+    public_table_view: PublicTableView
+    player_view: PlayerView
+    acting_seat_id: str | None
+    is_your_turn: bool
 
 
 @dataclass(frozen=True, slots=True)

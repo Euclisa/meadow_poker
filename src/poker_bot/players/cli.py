@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Awaitable, Callable
 
 from poker_bot.players.base import PlayerAgent
-from poker_bot.players.rendering import render_decision_summary, render_events, render_player_view
-from poker_bot.types import ActionType, DecisionRequest, GameEvent, PlayerAction, PlayerView, PublicTableView
+from poker_bot.players.rendering import render_decision_summary, render_player_update
+from poker_bot.types import ActionType, DecisionRequest, PlayerAction, PlayerUpdate
 
 
 class CLIPlayerAgent(PlayerAgent):
@@ -19,8 +19,6 @@ class CLIPlayerAgent(PlayerAgent):
         self._output = output_func or print
 
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
-        if decision.recent_events:
-            self._output(render_events(decision.recent_events))
         self._output(render_decision_summary(decision))
 
         legal = {action.action_type.value: action for action in decision.legal_actions}
@@ -35,14 +33,8 @@ class CLIPlayerAgent(PlayerAgent):
                 return PlayerAction(selected.action_type, amount=amount)
             return PlayerAction(selected.action_type)
 
-    async def notify_terminal(
-        self,
-        events: tuple[GameEvent, ...],
-        view: PlayerView | PublicTableView,
-    ) -> None:
-        self._output(render_events(events))
-        if isinstance(view, PlayerView):
-            self._output(render_player_view(view))
+    async def notify_update(self, update: PlayerUpdate) -> None:
+        self._output(render_player_update(update))
 
     async def close(self) -> None:
         return None

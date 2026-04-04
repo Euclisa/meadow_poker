@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from poker_bot.types import ActionType, DecisionRequest, GameEvent, LegalAction, PlayerView
+from poker_bot.types import (
+    ActionType,
+    DecisionRequest,
+    GameEvent,
+    LegalAction,
+    PlayerUpdate,
+    PlayerUpdateType,
+    PlayerView,
+)
 
 
 def render_events(
@@ -50,6 +58,27 @@ def render_player_view(view: PlayerView) -> str:
             f"Stack: {view.stack}",
         ]
     )
+
+
+def render_player_update(update: PlayerUpdate, *, compact: bool = False) -> str:
+    seat_names = {seat.seat_id: seat.name for seat in update.public_table_view.seats}
+    event_text = render_events(update.events, seat_names=seat_names)
+    if compact:
+        lines = [event_text]
+        if update.update_type == PlayerUpdateType.TURN_STARTED:
+            actor = seat_names.get(update.acting_seat_id or "", "Unknown")
+            lines.append(f"Now acting: {actor}")
+        return "\n".join(line for line in lines if line)
+
+    actor = seat_names.get(update.acting_seat_id or "", "Unknown") if update.acting_seat_id else "-"
+    lines = [event_text]
+    lines.append(f"Phase: {update.public_table_view.phase.value}")
+    lines.append(f"Board: {' '.join(update.public_table_view.board_cards) or '-'}")
+    lines.append(f"Pot: {update.public_table_view.pot_total}")
+    lines.append(f"Now acting: {actor}")
+    if update.is_your_turn:
+        lines.append("It is your turn.")
+    return "\n".join(lines)
 
 
 def _render_legal_action(action: LegalAction) -> str:

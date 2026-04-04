@@ -7,14 +7,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from poker_bot.players.base import PlayerAgent
-from poker_bot.players.rendering import render_events
+from poker_bot.players.rendering import render_events, render_player_update
 from poker_bot.types import (
     ActionType,
     DecisionRequest,
-    GameEvent,
     PlayerAction,
-    PlayerView,
-    PublicTableView,
+    PlayerUpdate,
+    PlayerUpdateType,
 )
 
 logger = logging.getLogger(__name__)
@@ -170,6 +169,7 @@ class LLMPlayerAgent(PlayerAgent):
         )
         self._current_hand_number: int | None = None
         self._history: list[dict[str, str]] = []
+        self._buffered_updates: list[PlayerUpdate] = []
 
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
         self._reset_history_if_needed(decision)
@@ -186,23 +186,24 @@ class LLMPlayerAgent(PlayerAgent):
         completion = await self.client.complete_json(messages)
         self._history.append({"role": "user", "content": prompt})
         self._history.append({"role": "assistant", "content": completion.raw_text})
+        self._buffered_updates.clear()
         action = self._parse_action(completion.payload)
         logger.debug("LLMPlayerAgent parsed action seat_id=%s action=%s", self.seat_id, action)
         return action
 
-    async def notify_terminal(
-        self,
-        events: tuple[GameEvent, ...],
-        view: PlayerView | PublicTableView,
-    ) -> None:
-        if any(event.event_type == "hand_completed" for event in events):
+    async def notify_update(self, update: PlayerUpdate) -> None:
+        if update.events:
+            self._buffered_updates.append(update)
+        if update.update_type in {PlayerUpdateType.HAND_COMPLETED, PlayerUpdateType.TABLE_COMPLETED}:
             self._current_hand_number = None
             self._history.clear()
+            self._buffered_updates.clear()
         return None
 
     async def close(self) -> None:
         self._current_hand_number = None
         self._history.clear()
+        self._buffered_updates.clear()
         return None
 
     def _build_messages(self, prompt: str) -> list[dict[str, str]]:
@@ -217,6 +218,11 @@ class LLMPlayerAgent(PlayerAgent):
         if self._current_hand_number != hand_number:
             self._current_hand_number = hand_number
             self._history.clear()
+            self._buffered_updates = [
+                update
+                for update in self._buffered_updates
+                if update.public_table_view.hand_number == hand_number
+            ]
 
     def _build_prompt(self, decision: DecisionRequest) -> str:
         legal_lines = []
@@ -247,8 +253,8 @@ class LLMPlayerAgent(PlayerAgent):
             )
         parts.extend(
             [
-                "Recent events:",
-                render_events(decision.recent_events),
+                "Updates since your last turn:",
+                self._render_buffered_updates(),
                 "Legal actions:",
                 *legal_lines,
             ]
@@ -265,6 +271,11 @@ class LLMPlayerAgent(PlayerAgent):
             'Invalid examples: Here is my move: {"action":"call"}, ```json {"action":"call"} ```, or any explanation text.'
         )
         return "\n".join(parts)
+
+    def _render_buffered_updates(self) -> str:
+        if not self._buffered_updates:
+            return "No updates."
+        return "\n\n".join(render_player_update(update, compact=True) for update in self._buffered_updates)
 
     def _parse_action(self, payload: dict[str, Any]) -> PlayerAction:
         raw_action = payload.get("action")

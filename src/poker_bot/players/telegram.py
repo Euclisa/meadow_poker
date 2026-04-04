@@ -5,15 +5,13 @@ import logging
 from typing import Any
 
 from poker_bot.players.base import PlayerAgent
-from poker_bot.players.rendering import render_decision_summary, render_events
+from poker_bot.players.rendering import render_decision_summary, render_player_update
 from poker_bot.types import (
     ActionType,
     DecisionRequest,
-    GameEvent,
     PlayerAction,
-    PlayerView,
-    PublicTableView,
     TelegramPendingActionState,
+    PlayerUpdate,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,19 +50,13 @@ class TelegramPlayerAgent(PlayerAgent):
         )
         self._pending_future = asyncio.get_running_loop().create_future()
 
-        seat_names = self._seat_names(decision)
-        text_parts = []
-        if decision.recent_events:
-            text_parts.append(render_events(decision.recent_events, seat_names=seat_names))
-        text_parts.append(
-            render_decision_summary(
-                decision,
-                show_seat_id=False,
-                show_legal_actions=False,
-            )
+        text = render_decision_summary(
+            decision,
+            show_seat_id=False,
+            show_legal_actions=False,
         )
         logger.debug("Telegram pending action created seat_id=%s user_id=%s decision=%s", self.seat_id, self.user_id, decision)
-        await self._dispatch_message("\n\n".join(text_parts), self._build_keyboard(decision))
+        await self._dispatch_message(text, self._build_keyboard(decision))
         try:
             return await self._pending_future
         finally:
@@ -171,12 +163,11 @@ class TelegramPlayerAgent(PlayerAgent):
         self._pending_future = None
         self._pending_state = None
 
-    async def notify_terminal(
-        self,
-        events: tuple[GameEvent, ...],
-        view: PlayerView | PublicTableView,
-    ) -> None:
-        await self._dispatch_message(render_events(events, seat_names=self._seat_names_from_view(view)), None)
+    async def notify_update(self, update: PlayerUpdate) -> None:
+        if not update.events:
+            return
+        text = render_player_update(update, compact=not update.is_your_turn)
+        await self._dispatch_message(text, None)
 
     async def close(self) -> None:
         await self.cancel_pending_action("agent_closed")
@@ -215,15 +206,6 @@ class TelegramPlayerAgent(PlayerAgent):
             label = self._button_label(action.action_type, action.min_amount, action.max_amount)
             keyboard.append([KeyboardButton(text=label)])
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
-
-    @staticmethod
-    def _seat_names(decision: DecisionRequest) -> dict[str, str]:
-        return {seat.seat_id: seat.name for seat in decision.public_table_view.seats}
-
-    @staticmethod
-    def _seat_names_from_view(view: PlayerView | PublicTableView) -> dict[str, str]:
-        public_table = view.public_table if isinstance(view, PlayerView) else view
-        return {seat.seat_id: seat.name for seat in public_table.seats}
 
     @staticmethod
     def _button_label(action_type: ActionType, min_amount: int | None, max_amount: int | None) -> str:

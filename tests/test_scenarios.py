@@ -7,7 +7,7 @@ from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.base import PlayerAgent
 from poker_bot.poker.decks import PredefinedDeckFactory
 from poker_bot.poker.engine import PokerEngine
-from poker_bot.types import ActionType, DecisionRequest, GameEvent, PlayerAction, PlayerView, PublicTableView, SeatConfig, TableConfig
+from poker_bot.types import ActionType, DecisionRequest, PlayerAction, PlayerUpdate, SeatConfig, TableConfig
 
 
 class ScriptedAgent(PlayerAgent):
@@ -15,7 +15,7 @@ class ScriptedAgent(PlayerAgent):
         self.seat_id = seat_id
         self._actions = list(actions)
         self.decisions: list[DecisionRequest] = []
-        self.terminal_notifications: list[tuple[tuple[GameEvent, ...], PlayerView | PublicTableView]] = []
+        self.updates: list[PlayerUpdate] = []
 
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
         self.decisions.append(decision)
@@ -23,12 +23,8 @@ class ScriptedAgent(PlayerAgent):
             raise AssertionError(f"No scripted action left for {self.seat_id}")
         return self._actions.pop(0)
 
-    async def notify_terminal(
-        self,
-        events: tuple[GameEvent, ...],
-        view: PlayerView | PublicTableView,
-    ) -> None:
-        self.terminal_notifications.append((events, view))
+    async def notify_update(self, update: PlayerUpdate) -> None:
+        self.updates.append(update)
 
     async def close(self) -> None:
         return None
@@ -191,8 +187,8 @@ def test_scenario_factory_exhaustion_stops_session_smoothly() -> None:
     terminal_events = {
         event.event_type
         for agent in agents.values()
-        for events, _view in agent.terminal_notifications
-        for event in events
+        for update in agent.updates
+        for event in update.events
     }
     assert final_stacks == scenario.expected_stacks
     assert orchestrator.engine.get_phase().value == "table_complete"

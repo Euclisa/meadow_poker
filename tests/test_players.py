@@ -5,7 +5,7 @@ import pytest
 
 from poker_bot.players.cli import CLIPlayerAgent
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
-from poker_bot.players.rendering import render_events
+from poker_bot.players.rendering import render_events, render_player_update
 from poker_bot.players.telegram import TelegramPlayerAgent
 from poker_bot.types import (
     ActionType,
@@ -14,6 +14,8 @@ from poker_bot.types import (
     GamePhase,
     LegalAction,
     PlayerAction,
+    PlayerUpdate,
+    PlayerUpdateType,
     PlayerView,
     PublicTableView,
     SeatSnapshot,
@@ -55,10 +57,21 @@ def make_decision_request() -> DecisionRequest:
             LegalAction(ActionType.CALL),
             LegalAction(ActionType.RAISE, min_amount=200, max_amount=1_900),
         ),
-        recent_events=(
+    )
+
+
+def make_player_update(*, is_your_turn: bool = False) -> PlayerUpdate:
+    decision = make_decision_request()
+    return PlayerUpdate(
+        update_type=PlayerUpdateType.TURN_STARTED if is_your_turn else PlayerUpdateType.STATE_CHANGED,
+        events=(
             GameEvent("hand_started", {"hand_number": 1}),
             GameEvent("blind_posted", {"seat_id": "p2", "blind": "big", "amount": 100}),
         ),
+        public_table_view=decision.public_table_view,
+        player_view=decision.player_view,
+        acting_seat_id=decision.acting_seat_id,
+        is_your_turn=is_your_turn,
     )
 
 
@@ -84,7 +97,7 @@ class FakeOpenAIClient:
         self.chat = type("Chat", (), {"completions": FakeResponsesAPI()})()
 
 
-def test_llm_player_prompt_includes_recent_events_and_parses_json() -> None:
+def test_llm_player_prompt_includes_buffered_updates_and_parses_json() -> None:
     decision = make_decision_request()
     client = FakeOpenAIClient()
     agent = LLMPlayerAgent(
@@ -92,15 +105,19 @@ def test_llm_player_prompt_includes_recent_events_and_parses_json() -> None:
         client=LLMGameClient(model="gpt-test", api_key="test", client=client),
     )
 
-    action = asyncio.run(agent.request_action(decision))
+    async def exercise() -> PlayerAction:
+        await agent.notify_update(make_player_update())
+        return await agent.request_action(decision)
+
+    action = asyncio.run(exercise())
 
     assert action == PlayerAction(ActionType.RAISE, amount=400)
     messages = client.chat.completions.messages_list[0]
     prompt = messages[-1]["content"]
     assert messages[0]["role"] == "developer"
     assert "Return exactly one JSON object and nothing else." in messages[0]["content"]
-    assert "Recent events:" in prompt
-    assert "p2 posted big blind 100" in prompt
+    assert "Updates since your last turn:" in prompt
+    assert "Villain posted big blind 100" in prompt
     assert "raise total=200..1900" in prompt
     assert "Hole cards: As Kd" in prompt
     assert 'Invalid examples: Here is my move: {"action":"call"}' in prompt
@@ -230,7 +247,6 @@ def test_llm_player_agent_keeps_history_within_hand_and_resets_next_hand() -> No
             seats=first.public_table_view.seats,
         ),
         legal_actions=(LegalAction(ActionType.CHECK),),
-        recent_events=(GameEvent("street_started", {"phase": "flop", "board_cards": ("2c", "7d", "8h")}),),
     )
     third = DecisionRequest(
         acting_seat_id=first.acting_seat_id,
@@ -268,12 +284,31 @@ def test_llm_player_agent_keeps_history_within_hand_and_resets_next_hand() -> No
             seats=first.public_table_view.seats,
         ),
         legal_actions=(LegalAction(ActionType.FOLD), LegalAction(ActionType.CALL)),
-        recent_events=(GameEvent("hand_started", {"hand_number": 2}),),
     )
 
     async def exercise() -> None:
         await agent.request_action(first)
+        await agent.notify_update(
+            PlayerUpdate(
+                update_type=PlayerUpdateType.STATE_CHANGED,
+                events=(GameEvent("street_started", {"phase": "flop", "board_cards": ("2c", "7d", "8h")}),),
+                public_table_view=second.public_table_view,
+                player_view=second.player_view,
+                acting_seat_id=second.acting_seat_id,
+                is_your_turn=True,
+            )
+        )
         await agent.request_action(second)
+        await agent.notify_update(
+            PlayerUpdate(
+                update_type=PlayerUpdateType.HAND_COMPLETED,
+                events=(GameEvent("hand_completed", {"hand_number": 1}),),
+                public_table_view=second.public_table_view,
+                player_view=second.player_view,
+                acting_seat_id=None,
+                is_your_turn=False,
+            )
+        )
         await agent.request_action(third)
 
     asyncio.run(exercise())
@@ -287,6 +322,7 @@ def test_llm_player_agent_keeps_history_within_hand_and_resets_next_hand() -> No
     assert any(message["role"] == "assistant" for message in calls[1])
     assert calls[1][1]["role"] == "user"
     assert calls[1][2] == {"role": "assistant", "content": '{"action":"check"}'}
+    assert "flop started, board: 2c 7d 8h" in calls[1][-1]["content"]
     assert calls[2] == [
         {"role": "developer", "content": agent.system_prompt},
         {"role": "user", "content": calls[2][-1]["content"]},
@@ -341,6 +377,27 @@ def test_telegram_player_agent_builds_reply_keyboard_from_legal_actions() -> Non
     assert "Player: Hero" in text
     assert "Legal actions:" not in text
     assert keyboard == ["Fold", "Call", "Raise 200-1900"]
+
+
+def test_telegram_player_agent_sends_immediate_update_messages() -> None:
+    sent_messages: list[tuple[int, str, object | None]] = []
+
+    async def send_message(chat_id: int, text: str, reply_markup: object | None) -> None:
+        sent_messages.append((chat_id, text, reply_markup))
+
+    agent = TelegramPlayerAgent(
+        "p1",
+        user_id=99,
+        chat_id=42,
+        send_message=send_message,
+    )
+
+    asyncio.run(agent.notify_update(make_player_update()))
+
+    assert sent_messages
+    _chat_id, text, markup = sent_messages[0]
+    assert "Villain posted big blind 100" in text
+    assert markup is None
 
 
 def test_telegram_player_agent_bet_raise_requires_amount_and_validates_input() -> None:
@@ -413,3 +470,9 @@ def test_render_events_can_use_player_names_instead_of_seat_ids() -> None:
     assert "Matvey Klochihin posted small blind 50" in rendered
     assert "Nova_bot posted big blind 100" in rendered
     assert "Matvey Klochihin -> call 50" in rendered
+
+
+def test_render_player_update_marks_turn_started() -> None:
+    rendered = render_player_update(make_player_update(is_your_turn=True))
+
+    assert "It is your turn." in rendered
