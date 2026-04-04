@@ -118,8 +118,12 @@ async def run_telegram_mode(config: ProjectConfig) -> None:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    configure_logging(args.debug)
     config = load_project_config(args.config)
+    configure_logging(
+        mode=args.mode,
+        debug=args.debug,
+        config_level=config.game.log_level,
+    )
     logger.debug("Loaded config from %s", args.config)
     if args.mode == "cli":
         asyncio.run(run_cli_mode(config, players_spec=args.players, max_hands=args.max_hands))

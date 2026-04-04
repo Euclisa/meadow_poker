@@ -350,6 +350,132 @@ def test_cli_player_agent_uses_legal_actions_only() -> None:
     assert any("Illegal choice" in line for line in outputs)
 
 
+def test_cli_player_agent_accepts_shortcuts() -> None:
+    decision = make_decision_request()
+    outputs: list[str] = []
+    inputs = iter(["f"])
+    agent = CLIPlayerAgent(
+        "p1",
+        input_func=lambda _: next(inputs),
+        output_func=outputs.append,
+    )
+
+    action = asyncio.run(agent.request_action(decision))
+
+    assert action == PlayerAction(ActionType.FOLD)
+
+
+def test_cli_player_agent_validates_amount_range() -> None:
+    decision = make_decision_request()
+    outputs: list[str] = []
+    inputs = iter(["r", "abc", "r", "50", "r", "300"])
+    agent = CLIPlayerAgent(
+        "p1",
+        input_func=lambda _: next(inputs),
+        output_func=outputs.append,
+    )
+
+    action = asyncio.run(agent.request_action(decision))
+
+    assert action == PlayerAction(ActionType.RAISE, amount=300)
+    assert any("Enter a number" in line for line in outputs)
+    assert any("Minimum" in line for line in outputs)
+
+
+def test_cli_player_agent_auto_fills_all_in_amount() -> None:
+    public_table = PublicTableView(
+        hand_number=1,
+        phase=GamePhase.PREFLOP,
+        board_cards=(),
+        pot_total=150,
+        current_bet=100,
+        dealer_seat_id="p1",
+        acting_seat_id="p1",
+        small_blind=50,
+        big_blind=100,
+        seats=(
+            SeatSnapshot("p1", "Hero", 180, 0, False, False, True, "dealer"),
+            SeatSnapshot("p2", "Villain", 1_900, 100, False, False, True, "big_blind"),
+        ),
+    )
+    player_view = PlayerView(
+        seat_id="p1",
+        player_name="Hero",
+        hole_cards=("As", "Kd"),
+        stack=180,
+        contribution=0,
+        position="dealer",
+        to_call=100,
+        public_table=public_table,
+    )
+    decision = DecisionRequest(
+        acting_seat_id="p1",
+        player_view=player_view,
+        public_table_view=public_table,
+        legal_actions=(
+            LegalAction(ActionType.FOLD),
+            LegalAction(ActionType.CALL),
+            LegalAction(ActionType.RAISE, min_amount=180, max_amount=180),
+        ),
+    )
+    outputs: list[str] = []
+    inputs = iter(["r"])
+    agent = CLIPlayerAgent(
+        "p1",
+        input_func=lambda _: next(inputs),
+        output_func=outputs.append,
+    )
+
+    action = asyncio.run(agent.request_action(decision))
+
+    assert action == PlayerAction(ActionType.RAISE, amount=180)
+    assert any("All-in: 180" in line for line in outputs)
+
+
+def test_cli_notify_update_renders_events_with_unicode_cards() -> None:
+    decision = make_decision_request()
+    update = PlayerUpdate(
+        update_type=PlayerUpdateType.STATE_CHANGED,
+        events=(
+            GameEvent("hand_started", {"hand_number": 1}),
+            GameEvent("blind_posted", {"seat_id": "p1", "blind": "small", "amount": 50}),
+            GameEvent("street_started", {"phase": "flop", "board_cards": ("As", "Kh", "Qd")}),
+        ),
+        public_table_view=decision.public_table_view,
+        player_view=decision.player_view,
+        acting_seat_id="p1",
+        is_your_turn=False,
+    )
+    outputs: list[str] = []
+    agent = CLIPlayerAgent("p1", output_func=outputs.append)
+
+    asyncio.run(agent.notify_update(update))
+
+    rendered = "\n".join(outputs)
+    assert "Hand #1" in rendered
+    assert "A♠ K♥ Q♦" in rendered
+    assert "Flop" in rendered
+
+
+def test_cli_status_shows_unicode_cards_and_state() -> None:
+    decision = make_decision_request()
+    outputs: list[str] = []
+    inputs = iter(["f"])
+    agent = CLIPlayerAgent(
+        "p1",
+        input_func=lambda _: next(inputs),
+        output_func=outputs.append,
+    )
+
+    asyncio.run(agent.request_action(decision))
+
+    rendered = "\n".join(outputs)
+    assert "A♠ K♦" in rendered
+    assert "Pot: 150" in rendered
+    assert "Stack: 1900" in rendered
+    assert "[f]old" in rendered
+
+
 def test_telegram_player_agent_builds_reply_keyboard_from_legal_actions() -> None:
     decision = make_decision_request()
     sent_messages: list[tuple[int, str, object | None]] = []
@@ -593,3 +719,79 @@ def test_telegram_player_agent_does_not_duplicate_status_before_turn_prompt() ->
     prompt_messages = [text for _chat_id, text, _markup in sent_messages if "Your move" in text]
     assert len(status_messages) == 1, f"Expected 1 status panel, got {len(status_messages)}: {status_messages}"
     assert len(prompt_messages) == 1
+
+
+def test_telegram_player_agent_cancel_exits_amount_entry() -> None:
+    decision = make_decision_request()
+    sent_messages: list[tuple[int, str, object | None]] = []
+
+    async def send_message(chat_id: int, text: str, reply_markup: object | None) -> None:
+        sent_messages.append((chat_id, text, reply_markup))
+
+    agent = TelegramPlayerAgent(
+        "p1",
+        user_id=99,
+        chat_id=42,
+        send_message=send_message,
+    )
+
+    async def exercise_agent() -> PlayerAction:
+        pending = asyncio.create_task(agent.request_action(decision))
+        await asyncio.sleep(0)
+        # Enter raise amount flow
+        assert await agent.submit_text_action(user_id=99, chat_id=42, text="Raise 200-1900") is True
+        # Cancel out of amount entry
+        assert await agent.submit_text_action(user_id=99, chat_id=42, text="cancel") is True
+        # Should be back at action selection — now fold instead
+        assert await agent.submit_text_action(user_id=99, chat_id=42, text="Fold") is True
+        return await pending
+
+    action = asyncio.run(exercise_agent())
+
+    assert action == PlayerAction(ActionType.FOLD)
+    messages = [text for _chat_id, text, _markup in sent_messages]
+    assert any("Amount entry cancelled" in m for m in messages)
+
+
+def test_render_events_handles_chips_refunded() -> None:
+    events = (
+        GameEvent("chips_refunded", {"seat_id": "p1", "amount": 200}),
+    )
+
+    rendered = render_events(events, seat_names={"p1": "Hero"})
+
+    assert "Hero refunded 200" in rendered
+
+
+def test_render_events_handles_showdown_and_table_completed() -> None:
+    events = (
+        GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
+        GameEvent("table_completed", {"reason": "not_enough_players", "hand_number": 1}),
+    )
+
+    rendered = render_events(events)
+
+    assert "Showdown, board: As Kh Qd Jc Tc" in rendered
+    assert "Table completed (not_enough_players)" in rendered
+
+
+def test_render_telegram_chips_refunded_event() -> None:
+    decision = make_decision_request()
+    update = PlayerUpdate(
+        update_type=PlayerUpdateType.TABLE_COMPLETED,
+        events=(
+            GameEvent("chips_refunded", {"seat_id": "p1", "amount": 200}),
+            GameEvent("table_completed", {"reason": "deck_exhausted", "hand_number": 1}),
+        ),
+        public_table_view=decision.public_table_view,
+        player_view=decision.player_view,
+        acting_seat_id=None,
+        is_your_turn=False,
+    )
+
+    messages = render_telegram_update_messages(update)
+
+    refund_msg = next((m for m in messages if "refunded" in m), None)
+    assert refund_msg is not None
+    assert "💰" in refund_msg
+    assert "200" in refund_msg

@@ -179,7 +179,7 @@ class PokerEngine:
         return tuple(legal_actions)
 
     def start_next_hand(self) -> ActionResult:
-        logger.debug("Engine start_next_hand hand_number=%s phase=%s", self._hand_number + 1, self._phase)
+        logger.info("Starting hand %s", self._hand_number + 1)
         if not self.is_table_active():
             return self._terminate_table(
                 code="table_complete",
@@ -237,11 +237,15 @@ class PokerEngine:
         )
 
         self._acting_index = self._first_to_act_preflop()
-        logger.debug(
-            "Engine hand started hand_number=%s dealer=%s acting_seat=%s board=%s hole_cards=%s",
+        logger.info(
+            "Hand %s started dealer=%s first_actor=%s",
             self._hand_number,
             self._seat_id_or_none(self._dealer_index),
             self.get_acting_seat(),
+        )
+        logger.debug(
+            "Hand %s deal details board=%s hole_cards=%s",
+            self._hand_number,
             self._board_cards,
             {seat.seat_id: tuple(seat.hole_cards) for seat in self._seats if seat.in_hand},
         )
@@ -361,11 +365,11 @@ class PokerEngine:
         if self._phase in {GamePhase.PREFLOP, GamePhase.FLOP, GamePhase.TURN, GamePhase.RIVER}:
             if previous_bet != self._current_bet:
                 events.append(GameEvent("bet_updated", {"current_bet": self._current_bet}))
+        logger.info("Action seat=%s %s next=%s", seat_id, action.action_type.value, self.get_acting_seat())
         logger.debug(
-            "Engine action resolved seat_id=%s action=%s next_acting=%s phase=%s stacks=%s",
+            "Action details seat=%s action=%s phase=%s stacks=%s",
             seat_id,
             action,
-            self.get_acting_seat(),
             self._phase,
             {seat.seat_id: seat.stack for seat in self._seats},
         )
@@ -458,7 +462,7 @@ class PokerEngine:
         self._phase = GamePhase.SHOWDOWN
         events.append(GameEvent("showdown_started", {"board_cards": tuple(self._board_cards)}))
         payouts = self._calculate_showdown_payouts()
-        logger.debug("Engine showdown board=%s payouts=%s", self._board_cards, payouts)
+        logger.info("Showdown payouts=%s", payouts)
         for seat_id, amount in payouts.items():
             if amount <= 0:
                 continue

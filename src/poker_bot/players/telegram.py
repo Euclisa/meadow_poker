@@ -74,6 +74,15 @@ class TelegramPlayerAgent(PlayerAgent):
             logger.debug("Telegram text action ignored seat_id=%s no pending state text=%s", self.seat_id, text)
             return False
         if self._pending_state.awaiting_amount:
+            if text.strip().lower() in {"cancel", "back"}:
+                self._pending_state.awaiting_amount = False
+                self._pending_state.selected_action_type = None
+                logger.debug("Telegram amount entry cancelled seat_id=%s", self.seat_id)
+                await self._dispatch_message(
+                    "Amount entry cancelled.",
+                    self._build_keyboard(self._pending_state.decision_request),
+                )
+                return True
             return await self.submit_amount(user_id=user_id, chat_id=chat_id, amount_text=text)
 
         action_name = self._normalize_action_text(text)

@@ -36,13 +36,13 @@ class GameOrchestrator:
         hands_played = 0
         try:
             while not self._stop_requested:
-                logger.debug("Starting next hand hands_played=%s max_hands=%s", hands_played, max_hands)
+                logger.info("Starting next hand hands_played=%s max_hands=%s", hands_played, max_hands)
                 start_result = self.engine.start_next_hand()
                 self._append_events(start_result.events)
-                logger.debug("Engine start_next_hand result=%s events=%s", start_result, start_result.events)
+                logger.debug("start_next_hand result=%s events=%s", start_result, start_result.events)
                 await self._deliver_updates()
                 if not start_result.ok:
-                    logger.debug("Stopping orchestrator because start_next_hand returned ok=False")
+                    logger.info("Table ended: start_next_hand returned ok=False")
                     break
 
                 await self._run_current_hand()
@@ -89,10 +89,10 @@ class GameOrchestrator:
                 if result.events or result.state_changed or self.engine.get_phase() == GamePhase.TABLE_COMPLETE:
                     self._append_events(result.events)
                     await self._deliver_updates()
-                    logger.debug("Stopping current hand because result ended table/hand result=%s", result)
+                    logger.info("Hand ended mid-action result=%s", result)
                     return
                 self._pending[acting_seat].validation_error = result.error
-                logger.debug("Retrying same seat due to validation error=%s", result.error)
+                logger.warning("Invalid action from seat=%s error=%s", acting_seat, result.error)
                 continue
             self._append_events(result.events)
             await self._deliver_updates()

@@ -204,10 +204,14 @@ class TelegramApp:
             await self._notify_waiting_table(cancelled, f"Table {cancelled.table_id} was cancelled by the creator.")
             return
 
+        reservation = next(
+            (u for u in session.claimed_telegram_users if u.user_id == user_id), None
+        )
+        display_name = reservation.display_name if reservation else str(user_id)
         self.registry.leave_waiting_table(user_id)
         await self._notify_waiting_table(
             session,
-            f"User {user_id} left table {session.table_id}. "
+            f"{display_name} left table {session.table_id}. "
             f"Telegram seats: {len(session.claimed_telegram_users)}/{session.telegram_seat_count}.",
         )
 
@@ -241,6 +245,13 @@ class TelegramApp:
         command = self._match_lobby_command(text)
         if command is not None and user_id not in self._create_flows:
             await command(user_id=user_id, chat_id=chat_id, display_name=display_name)
+            return
+        if user_id in self._create_flows and text.strip().lower() == "help":
+            await self.handle_help_command(chat_id=chat_id)
+            return
+        if user_id in self._create_flows and text.strip().lower() == "cancel":
+            self._create_flows.pop(user_id, None)
+            await self._send_message(chat_id, "Table creation cancelled.", self._build_lobby_keyboard(user_id))
             return
         if user_id in self._create_flows:
             await self._handle_create_flow_step(
@@ -380,13 +391,12 @@ class TelegramApp:
         await self._send_message(chat_id, self._format_created_table(session), self._build_lobby_keyboard(user_id))
 
     async def _start_table(self, session: TelegramTableSession) -> None:
-        logger.debug(
-            "Starting Telegram table table_id=%s total_seats=%s telegram_seats=%s llm_seats=%s users=%s",
+        logger.info(
+            "Starting table %s seats=%s telegram=%s llm=%s",
             session.table_id,
             session.total_seats,
             session.telegram_seat_count,
             session.llm_seat_count,
-            session.claimed_telegram_users,
         )
         seat_configs: list[SeatConfig] = []
         player_agents: dict[str, Any] = {}
@@ -430,7 +440,7 @@ class TelegramApp:
         try:
             await session.orchestrator.run(max_hands=self.config.max_hands_per_table, close_agents=True)
         finally:
-            logger.debug("Telegram table completed table_id=%s", session.table_id)
+            logger.info("Table %s completed", session.table_id)
             self.registry.mark_completed(session)
             await self._notify_waiting_table(session, f"Table {session.table_id} has completed.")
 

@@ -216,3 +216,55 @@ def test_lobby_buttons_work_as_text_commands() -> None:
 
     assert any(markup == [["Create Table"], ["Help"]] for _chat, _text, markup in messages)
     assert any("Table " in text and "Status: waiting" in text for _chat, text, _markup in messages)
+
+
+def test_help_works_during_create_flow() -> None:
+    app, messages = make_app()
+
+    async def scenario() -> None:
+        await app.handle_create_table_command(user_id=1, chat_id=101)
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="Help")
+        # Flow should still be active after help
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+
+    asyncio.run(scenario())
+
+    texts = [text for _chat, text, _markup in messages]
+    assert any("/start" in text for text in texts)  # help text was shown
+    table = app.registry.get_user_table(1)
+    assert table is not None  # flow completed after help
+
+
+def test_cancel_exits_create_flow() -> None:
+    app, messages = make_app()
+
+    async def scenario() -> None:
+        await app.handle_create_table_command(user_id=1, chat_id=101)
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="cancel")
+
+    asyncio.run(scenario())
+
+    texts = [text for _chat, text, _markup in messages]
+    assert any("Table creation cancelled" in text for text in texts)
+    assert app.registry.get_user_table(1) is None
+    assert 1 not in app._create_flows
+
+
+def test_leave_notification_shows_display_name() -> None:
+    app, messages = make_app()
+
+    async def scenario() -> None:
+        await app.handle_create_table_command(user_id=1, chat_id=101)
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="3")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="1")
+        table = app.registry.get_user_table(1)
+        assert table is not None
+        await app.handle_join_command(user_id=2, chat_id=202, display_name="Bob", table_id=table.table_id)
+        await app.handle_leave_table_command(user_id=2, chat_id=202)
+
+    asyncio.run(scenario())
+
+    texts = [text for _chat, text, _markup in messages]
+    assert any("Bob left table" in text for text in texts)
+    assert not any("User 2 left table" in text for text in texts)

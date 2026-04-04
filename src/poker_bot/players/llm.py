@@ -75,12 +75,13 @@ class LLMGameClient:
             except Exception as exc:  # pragma: no cover - defensive provider wrapper
                 last_error = exc
                 response_dump = self._safe_debug_dump(locals().get("response"))
-                logger.exception(
-                    "LLM request failed attempt=%s model=%s response_dump=%s",
+                logger.warning(
+                    "LLM request failed attempt=%s/%s model=%s",
                     attempt + 1,
+                    self.retries + 1,
                     self.model,
-                    response_dump,
                 )
+                logger.debug("LLM failure details response_dump=%s", response_dump)
         assert last_error is not None
         raise last_error
 
