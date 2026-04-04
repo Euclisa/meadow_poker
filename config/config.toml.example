@@ -18,3 +18,8 @@ log_thoughts = false
 bot_token = "replace-with-telegram-bot-token"
 bot_username = "your_bot_username"
 max_hands_per_table = 1
+
+[web]
+host = "127.0.0.1"
+port = 8080
+max_hands_per_table = 1

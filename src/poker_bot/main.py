@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers.add_parser("telegram", help="Run the Telegram bot")
+    subparsers.add_parser("web", help="Run the web lobby and table UI")
 
     return parser
 
@@ -120,6 +121,31 @@ async def run_telegram_mode(config: ProjectConfig) -> None:
     await app.run_polling()
 
 
+async def run_web_mode(config: ProjectConfig) -> None:
+    from poker_bot.web_app.app import WebApp, WebAppConfig
+
+    logger.debug("Starting web mode on %s:%s", config.web.host, config.web.port)
+    app = WebApp(
+        WebAppConfig(
+            host=config.web.host,
+            port=config.web.port,
+            llm_model=config.llm.model,
+            llm_api_key=config.llm.api_key,
+            llm_base_url=config.llm.base_url,
+            llm_timeout=config.llm.timeout,
+            llm_max_output_tokens=config.llm.max_output_tokens,
+            llm_recent_hand_count=config.llm.recent_hand_count,
+            llm_log_thoughts=config.llm.log_thoughts,
+            small_blind=config.game.small_blind,
+            big_blind=config.game.big_blind,
+            starting_stack=config.game.starting_stack,
+            max_players=config.game.max_players,
+            max_hands_per_table=config.web.max_hands_per_table,
+        )
+    )
+    await app.run()
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -135,6 +161,9 @@ def main() -> None:
         return
     if args.mode == "telegram":
         asyncio.run(run_telegram_mode(config))
+        return
+    if args.mode == "web":
+        asyncio.run(run_web_mode(config))
         return
     parser.error(f"Unknown mode: {args.mode}")
 

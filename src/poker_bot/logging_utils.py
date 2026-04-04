@@ -10,7 +10,21 @@ LOG_LEVEL_NAMES = {"debug", "info", "warning", "error", "critical"}
 _MODE_DEFAULTS: dict[str, int] = {
     "cli": logging.WARNING,
     "telegram": logging.INFO,
+    "web": logging.INFO,
 }
+
+
+class _PytestCaptureBridgeHandler(logging.Handler):
+    """Forward records to pytest's capture handler while keeping package propagation disabled."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers:
+            if handler is self:
+                continue
+            if handler.__class__.__name__ != "LogCaptureHandler" and not handler.__class__.__module__.startswith("_pytest."):
+                continue
+            handler.handle(record)
 
 
 def configure_logging(
@@ -30,10 +44,12 @@ def configure_logging(
 
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+    capture_bridge = _PytestCaptureBridgeHandler()
 
     pkg_logger = logging.getLogger(PACKAGE_LOGGER_NAME)
     pkg_logger.handlers.clear()
     pkg_logger.addHandler(handler)
+    pkg_logger.addHandler(capture_bridge)
     pkg_logger.setLevel(level)
     pkg_logger.propagate = False
 

@@ -6,12 +6,14 @@ from poker_bot.config import (
     LLMSettings,
     ProjectConfig,
     TelegramSettings,
+    WebSettings,
     load_project_config,
 )
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.poker.decks import PredefinedDeck, PredefinedDeckFactory, RandomDeck, RandomDeckFactory
 from poker_bot.poker.engine import PokerEngine
 from poker_bot.telegram_app import TelegramActionRouter, TelegramApp, TelegramAppConfig, TelegramTableRegistry, TelegramTableSession
+from poker_bot.web_app import WebApp, WebAppConfig, WebPlayerAgent, WebTableRegistry, WebTableSession
 from poker_bot.types import (
     ActionResult,
     ActionType,
@@ -64,5 +66,11 @@ __all__ = [
     "TelegramTableSession",
     "TelegramTableState",
     "TelegramTableStatus",
+    "WebApp",
+    "WebAppConfig",
+    "WebPlayerAgent",
+    "WebSettings",
+    "WebTableRegistry",
+    "WebTableSession",
     "load_project_config",
 ]
