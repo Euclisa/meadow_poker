@@ -203,6 +203,9 @@ def _render_cli_event(event: GameEvent, *, seat_names: dict[str, str]) -> str | 
     if event.event_type == "showdown_started":
         board = _pretty_cards(tuple(payload.get("board_cards", ())))
         return f"\n  --- Showdown: {board} ---"
+    if event.event_type == "showdown_revealed":
+        cards = _pretty_cards(tuple(payload.get("hole_cards", ())))
+        return f"  {name}: showed {cards} ({payload['hand_label']})"
     if event.event_type == "pot_awarded":
         return f"  >> {name} wins {payload['amount']}"
     if event.event_type == "hand_awarded":
@@ -275,6 +278,9 @@ def _render_event(event: GameEvent, *, seat_names: dict[str, str] | None = None)
     if event.event_type == "showdown_started":
         board = " ".join(payload.get("board_cards", ())) or "-"
         return f"Showdown, board: {board}"
+    if event.event_type == "showdown_revealed":
+        cards = " ".join(payload.get("hole_cards", ())) or "-"
+        return f"{name} showed {cards}: {payload['hand_label']}"
     if event.event_type == "table_completed":
         return f"Table completed ({payload.get('reason', 'unknown')})"
     if event.event_type == "chips_refunded":
@@ -330,6 +336,10 @@ def _render_telegram_event(
         return ("state", f"🃏 <b>{escape(phase)}</b>")
     if event.event_type == "showdown_started":
         return ("state", f"🏁 <b>Showdown</b>: <code>{_telegram_cards(tuple(payload.get('board_cards', ())))}</code>")
+    if event.event_type == "showdown_revealed":
+        cards = _telegram_cards(tuple(payload.get("hole_cards", ()))
+        )
+        return ("action", f"🂠 {styled_name} showed <code>{cards}</code> ({escape(payload['hand_label'])})")
     if event.event_type == "hand_completed":
         return ("state", f"✅ <b>Hand {payload['hand_number']}</b> completed")
     if event.event_type == "table_completed":

@@ -20,6 +20,36 @@ RANK_TO_VALUE = {
 }
 VALUE_TO_RANK = {value: rank for rank, value in RANK_TO_VALUE.items()}
 SUITS = ("c", "d", "h", "s")
+VALUE_NAMES_SINGULAR = {
+    2: "two",
+    3: "three",
+    4: "four",
+    5: "five",
+    6: "six",
+    7: "seven",
+    8: "eight",
+    9: "nine",
+    10: "ten",
+    11: "jack",
+    12: "queen",
+    13: "king",
+    14: "ace",
+}
+VALUE_NAMES_PLURAL = {
+    2: "twos",
+    3: "threes",
+    4: "fours",
+    5: "fives",
+    6: "sixes",
+    7: "sevens",
+    8: "eights",
+    9: "nines",
+    10: "tens",
+    11: "jacks",
+    12: "queens",
+    13: "kings",
+    14: "aces",
+}
 
 
 def validate_card(card: str) -> str:
@@ -90,6 +120,14 @@ def best_hand_rank(cards: tuple[str, ...]) -> tuple[int, ...]:
     return max(rank_five_cards(combo) for combo in combinations(cards, 5))
 
 
+def best_hand_details(cards: tuple[str, ...]) -> tuple[tuple[int, ...], str]:
+    if len(cards) < 5:
+        raise ValueError("At least five cards are required to evaluate a hand")
+    best_combo = max(combinations(cards, 5), key=rank_five_cards)
+    rank = rank_five_cards(best_combo)
+    return rank, _label_rank(rank)
+
+
 def _straight_high(unique_values: list[int]) -> int | None:
     if len(unique_values) < 5:
         return None
@@ -103,3 +141,36 @@ def _straight_high(unique_values: list[int]) -> int | None:
         if window[0] - window[4] == 4 and len(set(window)) == 5:
             return 5 if window == [5, 4, 3, 2, 1] else window[0]
     return None
+
+
+def _label_rank(rank: tuple[int, ...]) -> str:
+    category = rank[0]
+    if category == 8:
+        return f"straight flush, {_high_label(rank[1])}"
+    if category == 7:
+        return f"four of a kind, {_plural_name(rank[1])}"
+    if category == 6:
+        return f"full house, {_plural_name(rank[1])} full of {_plural_name(rank[2])}"
+    if category == 5:
+        return f"flush, {_high_label(rank[1])}"
+    if category == 4:
+        return f"straight, {_high_label(rank[1])}"
+    if category == 3:
+        return f"three of a kind, {_plural_name(rank[1])}"
+    if category == 2:
+        return f"two pair, {_plural_name(rank[1])} and {_plural_name(rank[2])}"
+    if category == 1:
+        return f"one pair, {_plural_name(rank[1])}"
+    return f"high card, {_high_label(rank[1])}"
+
+
+def _high_label(value: int) -> str:
+    return f"{_singular_name(value)}-high"
+
+
+def _singular_name(value: int) -> str:
+    return VALUE_NAMES_SINGULAR[value]
+
+
+def _plural_name(value: int) -> str:
+    return VALUE_NAMES_PLURAL[value]

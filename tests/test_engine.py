@@ -1,6 +1,6 @@
 import pytest
 
-from poker_bot.poker.cards import best_hand_rank, rank_five_cards
+from poker_bot.poker.cards import best_hand_details, best_hand_rank, rank_five_cards
 from poker_bot.poker.decks import PredefinedDeckFactory
 from poker_bot.poker.engine import PokerEngine
 from poker_bot.types import ActionType, GamePhase, PlayerAction, SeatConfig, TableConfig
@@ -29,6 +29,13 @@ def make_engine(
 
 def test_best_hand_rank_handles_wheel_straight() -> None:
     assert best_hand_rank(("As", "2d", "3c", "4h", "5s")) == (4, 5)
+
+
+def test_best_hand_details_returns_label_for_best_combo() -> None:
+    rank, label = best_hand_details(("As", "Ah", "Kd", "Kc", "2s", "2d", "Ac"))
+
+    assert rank == (6, 14, 13)
+    assert label == "full house, aces full of kings"
 
 
 def test_start_next_hand_sets_first_actor_and_legal_actions() -> None:
@@ -96,6 +103,76 @@ def test_side_pot_showdown_pays_correctly() -> None:
     public_view = engine.get_public_table_view()
     stacks = {seat.seat_id: seat.stack for seat in public_view.seats}
     assert stacks == {"p1": 0, "p2": 1_200, "p3": 500}
+
+
+def test_showdown_emits_revealed_hole_cards_before_payouts() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(2_000, 2_000),
+    )
+    engine.start_next_hand()
+
+    result = engine.apply_action("p1", PlayerAction(ActionType.CALL))
+    assert result.ok is True
+    result = engine.apply_action("p2", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p2", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p1", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p2", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p1", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p2", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p1", PlayerAction(ActionType.CHECK))
+
+    assert result.ok is True
+    event_types = [event.event_type for event in result.events]
+    assert event_types == [
+        "action_applied",
+        "showdown_started",
+        "showdown_revealed",
+        "showdown_revealed",
+        "pot_awarded",
+        "hand_completed",
+    ]
+    reveal_payloads = [event.payload for event in result.events if event.event_type == "showdown_revealed"]
+    assert reveal_payloads == [
+        {"seat_id": "p1", "hole_cards": ("As", "Ad"), "hand_label": "one pair, aces"},
+        {"seat_id": "p2", "hole_cards": ("Kh", "Kd"), "hand_label": "one pair, kings"},
+    ]
+
+
+def test_showdown_reveals_only_live_non_folded_players() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Qd", "Ad", "Ks", "Qc", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(2_000, 2_000, 2_000),
+    )
+    engine.start_next_hand()
+
+    result = engine.apply_action("p1", PlayerAction(ActionType.FOLD))
+    assert result.ok is True
+    result = engine.apply_action("p2", PlayerAction(ActionType.CALL))
+    assert result.ok is True
+    result = engine.apply_action("p3", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p2", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p3", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p2", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p3", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p2", PlayerAction(ActionType.CHECK))
+    assert result.ok is True
+    result = engine.apply_action("p3", PlayerAction(ActionType.CHECK))
+
+    assert result.ok is True
+    reveal_seat_ids = [event.payload["seat_id"] for event in result.events if event.event_type == "showdown_revealed"]
+    assert reveal_seat_ids == ["p2", "p3"]
 
 
 def test_scripted_deck_factory_ends_table_cleanly_when_out_of_hands() -> None:

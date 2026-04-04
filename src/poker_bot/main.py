@@ -74,7 +74,11 @@ async def run_cli_mode(config: ProjectConfig, *, players_spec: str, max_hands: i
                     timeout=config.llm.timeout,
                     max_output_tokens=config.llm.max_output_tokens,
                 )
-            agents[seat_id] = LLMPlayerAgent(seat_id, client=llm_client)
+            agents[seat_id] = LLMPlayerAgent(
+                seat_id,
+                client=llm_client,
+                recent_hand_count=config.llm.recent_hand_count,
+            )
         else:
             seats.append(SeatConfig(seat_id=seat_id, name=player_entry))
             agents[seat_id] = CLIPlayerAgent(seat_id)
@@ -103,6 +107,7 @@ async def run_telegram_mode(config: ProjectConfig) -> None:
             llm_base_url=config.llm.base_url,
             llm_timeout=config.llm.timeout,
             llm_max_output_tokens=config.llm.max_output_tokens,
+            llm_recent_hand_count=config.llm.recent_hand_count,
             small_blind=config.game.small_blind,
             big_blind=config.game.big_blind,
             starting_stack=config.game.starting_stack,

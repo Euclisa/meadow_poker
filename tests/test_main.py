@@ -32,9 +32,10 @@ class RecordingLLMGameClient:
 
 
 class RecordingLLMPlayerAgent:
-    def __init__(self, seat_id: str, client: RecordingLLMGameClient) -> None:
+    def __init__(self, seat_id: str, client: RecordingLLMGameClient, recent_hand_count: int = 5) -> None:
         self.seat_id = seat_id
         self.client = client
+        self.recent_hand_count = recent_hand_count
 
 
 class RecordingOrchestrator:
@@ -75,6 +76,7 @@ def test_run_cli_mode_assigns_human_names_and_bot_seats(monkeypatch: pytest.Monk
     assert isinstance(orchestrator.agents["p1"], RecordingCLIPlayerAgent)
     assert isinstance(orchestrator.agents["p2"], RecordingLLMPlayerAgent)
     assert isinstance(orchestrator.agents["p3"], RecordingCLIPlayerAgent)
+    assert orchestrator.agents["p2"].recent_hand_count == 5
     assert orchestrator.max_hands == 7
 
 

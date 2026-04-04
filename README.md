@@ -26,6 +26,7 @@ All runtime configuration lives in `config/config.toml`.
 - `[game]` controls blinds, stack size, and table size limits.
 - `[llm]` configures the OpenAI-compatible backend used by LLM seats.
   - `max_output_tokens` is optional. If omitted, no output-token cap is sent to the provider.
+  - `recent_hand_count` controls how many completed hand summaries trigger an internal reflection-note update for each LLM seat.
 - `[telegram]` configures the Telegram bot runtime.
 
 LLM seat display names are drawn from [names.txt](/home/canary/Documents/Code/hse/poker_bot/src/poker_bot/data/names.txt) and get a `_bot` suffix, for example `Nova_bot`. Telegram human seats use the Telegram display name passed by the bot runtime.

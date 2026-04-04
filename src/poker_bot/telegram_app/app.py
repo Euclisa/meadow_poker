@@ -35,6 +35,7 @@ class TelegramAppConfig:
     llm_base_url: str | None = None
     llm_timeout: float = 30.0
     llm_max_output_tokens: int | None = None
+    llm_recent_hand_count: int = 5
     max_hands_per_table: int | None = None
 
 
@@ -418,6 +419,7 @@ class TelegramApp:
             player_agents[seat_id] = LLMPlayerAgent(
                 seat_id=seat_id,
                 client=self._llm_client_factory(),
+                recent_hand_count=self.config.llm_recent_hand_count,
             )
 
         engine = PokerEngine.create_table(

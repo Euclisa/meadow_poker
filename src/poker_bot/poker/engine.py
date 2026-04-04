@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import logging
 from typing import Iterable
 
-from poker_bot.poker.cards import best_hand_rank
+from poker_bot.poker.cards import best_hand_details, best_hand_rank
 from poker_bot.poker.decks import Deck, DeckExhaustedError, NoMoreDecksError, RandomDeckFactory
 from poker_bot.types import (
     ActionResult,
@@ -461,6 +461,20 @@ class PokerEngine:
     def _run_showdown(self, events: list[GameEvent]) -> None:
         self._phase = GamePhase.SHOWDOWN
         events.append(GameEvent("showdown_started", {"board_cards": tuple(self._board_cards)}))
+        for seat in self._seats:
+            if not seat.in_hand or seat.folded:
+                continue
+            _rank, hand_label = best_hand_details(tuple(seat.hole_cards + self._board_cards))
+            events.append(
+                GameEvent(
+                    "showdown_revealed",
+                    {
+                        "seat_id": seat.seat_id,
+                        "hole_cards": tuple(seat.hole_cards),
+                        "hand_label": hand_label,
+                    },
+                )
+            )
         payouts = self._calculate_showdown_payouts()
         logger.info("Showdown payouts=%s", payouts)
         for seat_id, amount in payouts.items():

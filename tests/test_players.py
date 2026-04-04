@@ -81,8 +81,9 @@ def make_player_update(*, is_your_turn: bool = False) -> PlayerUpdate:
 
 
 class FakeResponsesAPI:
-    def __init__(self) -> None:
+    def __init__(self, outputs: list[str] | None = None) -> None:
         self.messages_list: list[list[dict[str, str]]] = []
+        self.outputs = list(outputs or ['{"action":"raise","amount":400}'])
 
     async def create(
         self,
@@ -92,14 +93,15 @@ class FakeResponsesAPI:
         max_output_tokens: int | None = None,
     ) -> object:
         self.messages_list.append(messages)
-        message = type("Message", (), {"content": '{"action":"raise","amount":400}'})()
+        output = self.outputs.pop(0)
+        message = type("Message", (), {"content": output})()
         choice = type("Choice", (), {"message": message})()
         return type("Response", (), {"choices": [choice]})()
 
 
 class FakeOpenAIClient:
-    def __init__(self) -> None:
-        self.chat = type("Chat", (), {"completions": FakeResponsesAPI()})()
+    def __init__(self, outputs: list[str] | None = None) -> None:
+        self.chat = type("Chat", (), {"completions": FakeResponsesAPI(outputs)})()
 
 
 def test_llm_player_prompt_includes_buffered_updates_and_parses_json() -> None:
@@ -188,8 +190,11 @@ def test_llm_client_rejects_reasoning_only_responses() -> None:
 
 
 class RecordingCompletionsAPI:
-    def __init__(self) -> None:
+    def __init__(self, outputs: list[str] | None = None, *, fail_on_call: int | None = None) -> None:
         self.calls: list[list[dict[str, str]]] = []
+        self.outputs = list(outputs) if outputs is not None else ['{"action":"check"}']
+        self.fail_on_call = fail_on_call
+        self.call_count = 0
 
     async def create(
         self,
@@ -198,22 +203,27 @@ class RecordingCompletionsAPI:
         messages: list[dict[str, str]],
         max_output_tokens: int | None = None,
     ) -> object:
+        self.call_count += 1
         self.calls.append(messages)
-        message = type("Message", (), {"content": '{"action":"check"}'})()
+        if self.fail_on_call == self.call_count:
+            raise RuntimeError("forced failure")
+        output = self.outputs.pop(0)
+        message = type("Message", (), {"content": output})()
         choice = type("Choice", (), {"message": message})()
         return type("Response", (), {"choices": [choice]})()
 
 
 class RecordingOpenAIClient:
-    def __init__(self) -> None:
-        self.chat = type("Chat", (), {"completions": RecordingCompletionsAPI()})()
+    def __init__(self, outputs: list[str] | None = None, *, fail_on_call: int | None = None) -> None:
+        self.chat = type("Chat", (), {"completions": RecordingCompletionsAPI(outputs, fail_on_call=fail_on_call)})()
 
 
 def test_llm_player_agent_keeps_history_within_hand_and_resets_next_hand() -> None:
-    client = RecordingOpenAIClient()
+    client = RecordingOpenAIClient(outputs=['{"action":"check"}', '{"action":"check"}', "Opponent tendencies\n- Villain checks often", '{"action":"check"}'])
     agent = LLMPlayerAgent(
         "p1",
         client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        recent_hand_count=1,
     )
     first = make_decision_request()
     second = DecisionRequest(
@@ -307,7 +317,14 @@ def test_llm_player_agent_keeps_history_within_hand_and_resets_next_hand() -> No
         await agent.notify_update(
             PlayerUpdate(
                 update_type=PlayerUpdateType.HAND_COMPLETED,
-                events=(GameEvent("hand_completed", {"hand_number": 1}),),
+                events=(
+                    GameEvent("hand_started", {"hand_number": 1}),
+                    GameEvent("blind_posted", {"seat_id": "p2", "blind": "big", "amount": 100}),
+                    GameEvent("showdown_started", {"board_cards": ("2c", "7d", "8h", "9s", "Tc")}),
+                    GameEvent("showdown_revealed", {"seat_id": "p1", "hole_cards": ("As", "Kd"), "hand_label": "ace-high"}),
+                    GameEvent("pot_awarded", {"seat_id": "p2", "amount": 200}),
+                    GameEvent("hand_completed", {"hand_number": 1}),
+                ),
                 public_table_view=second.public_table_view,
                 player_view=second.player_view,
                 acting_seat_id=None,
@@ -319,7 +336,7 @@ def test_llm_player_agent_keeps_history_within_hand_and_resets_next_hand() -> No
     asyncio.run(exercise())
 
     calls = client.chat.completions.calls
-    assert len(calls) == 3
+    assert len(calls) == 4
     assert calls[0] == [
         {"role": "developer", "content": agent.system_prompt},
         {"role": "user", "content": calls[0][-1]["content"]},
@@ -328,10 +345,262 @@ def test_llm_player_agent_keeps_history_within_hand_and_resets_next_hand() -> No
     assert calls[1][1]["role"] == "user"
     assert calls[1][2] == {"role": "assistant", "content": '{"action":"check"}'}
     assert "flop started, board: 2c 7d 8h" in calls[1][-1]["content"]
-    assert calls[2] == [
-        {"role": "developer", "content": agent.system_prompt},
-        {"role": "user", "content": calls[2][-1]["content"]},
-    ]
+    assert "Recent completed hands:" not in calls[1][-1]["content"]
+    assert calls[2][0] == {"role": "developer", "content": agent._REFLECTION_PROMPT}
+    assert "Completed hand summaries to synthesize:" in calls[2][-1]["content"]
+    assert "Hand #1" in calls[2][-1]["content"]
+    assert calls[3][0] == {"role": "developer", "content": agent.system_prompt}
+    assert calls[3][1]["role"] == "developer"
+    assert "current observations from prior hands" in calls[3][1]["content"]
+    assert "Villain checks often" in calls[3][1]["content"]
+    assert calls[3][-1]["role"] == "user"
+    assert "Recent completed hands:" not in calls[3][-1]["content"]
+    assert "Updates since your last turn:" in calls[3][-1]["content"]
+
+
+def test_llm_player_agent_reflects_and_clears_pending_summaries() -> None:
+    client = RecordingOpenAIClient(outputs=["Initial note"])
+    agent = LLMPlayerAgent(
+        "p1",
+        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        recent_hand_count=1,
+    )
+
+    def make_update(hand_number: int) -> PlayerUpdate:
+        public_view = PublicTableView(
+            hand_number=hand_number,
+            phase=GamePhase.HAND_COMPLETE,
+            board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
+            pot_total=200,
+            current_bet=0,
+            dealer_seat_id="p1",
+            acting_seat_id=None,
+            small_blind=50,
+            big_blind=100,
+            seats=(
+                SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
+                SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
+            ),
+        )
+        player_view = PlayerView(
+            seat_id="p1",
+            player_name="Hero",
+            hole_cards=("As", "Kd"),
+            stack=2100,
+            contribution=100,
+            position="dealer",
+            to_call=0,
+            public_table=public_view,
+        )
+        return PlayerUpdate(
+            update_type=PlayerUpdateType.HAND_COMPLETED,
+            events=(
+                GameEvent("hand_started", {"hand_number": hand_number}),
+                GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
+                GameEvent("showdown_revealed", {"seat_id": "p1", "hole_cards": ("As", "Kd"), "hand_label": "straight, ace-high"}),
+                GameEvent("pot_awarded", {"seat_id": "p1", "amount": 200}),
+                GameEvent("hand_completed", {"hand_number": hand_number}),
+            ),
+            public_table_view=public_view,
+            player_view=player_view,
+            acting_seat_id=None,
+            is_your_turn=False,
+        )
+
+    async def exercise() -> None:
+        await agent.notify_update(make_update(1))
+
+    asyncio.run(exercise())
+
+    assert agent._reflection_note == "Initial note"
+    assert agent._pending_hand_summaries == []
+
+
+def test_llm_player_agent_uses_previous_note_during_later_reflection() -> None:
+    client = RecordingOpenAIClient(outputs=["First note", "Revised note"])
+    agent = LLMPlayerAgent(
+        "p1",
+        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        recent_hand_count=1,
+    )
+
+    async def exercise() -> None:
+        await agent.notify_update(make_update(1))
+        await agent.notify_update(make_update(2))
+
+    def make_update(hand_number: int) -> PlayerUpdate:
+        public_view = PublicTableView(
+            hand_number=hand_number,
+            phase=GamePhase.HAND_COMPLETE,
+            board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
+            pot_total=200,
+            current_bet=0,
+            dealer_seat_id="p1",
+            acting_seat_id=None,
+            small_blind=50,
+            big_blind=100,
+            seats=(
+                SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
+                SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
+            ),
+        )
+        return PlayerUpdate(
+            update_type=PlayerUpdateType.HAND_COMPLETED,
+            events=(
+                GameEvent("hand_started", {"hand_number": hand_number}),
+                GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
+                GameEvent("showdown_revealed", {"seat_id": "p1", "hole_cards": ("As", "Kd"), "hand_label": "straight, ace-high"}),
+                GameEvent("pot_awarded", {"seat_id": "p1", "amount": 200}),
+                GameEvent("hand_completed", {"hand_number": hand_number}),
+            ),
+            public_table_view=public_view,
+            player_view=PlayerView(
+                seat_id="p1",
+                player_name="Hero",
+                hole_cards=("As", "Kd"),
+                stack=2100,
+                contribution=100,
+                position="dealer",
+                to_call=0,
+                public_table=public_view,
+            ),
+            acting_seat_id=None,
+            is_your_turn=False,
+        )
+
+    asyncio.run(exercise())
+
+    reflection_call = client.chat.completions.calls[1]
+    assert "Your current observations:" in reflection_call[-1]["content"]
+    assert "First note" in reflection_call[-1]["content"]
+    assert agent._reflection_note == "Revised note"
+
+
+def test_llm_player_agent_keeps_pending_summaries_when_reflection_fails() -> None:
+    client = RecordingOpenAIClient(outputs=[], fail_on_call=1)
+    agent = LLMPlayerAgent(
+        "p1",
+        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        recent_hand_count=1,
+    )
+
+    public_view = PublicTableView(
+        hand_number=1,
+        phase=GamePhase.HAND_COMPLETE,
+        board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
+        pot_total=200,
+        current_bet=0,
+        dealer_seat_id="p1",
+        acting_seat_id=None,
+        small_blind=50,
+        big_blind=100,
+        seats=(
+            SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
+            SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
+        ),
+    )
+    update = PlayerUpdate(
+        update_type=PlayerUpdateType.HAND_COMPLETED,
+        events=(
+            GameEvent("hand_started", {"hand_number": 1}),
+            GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
+            GameEvent("showdown_revealed", {"seat_id": "p1", "hole_cards": ("As", "Kd"), "hand_label": "straight, ace-high"}),
+            GameEvent("pot_awarded", {"seat_id": "p1", "amount": 200}),
+            GameEvent("hand_completed", {"hand_number": 1}),
+        ),
+        public_table_view=public_view,
+        player_view=PlayerView(
+            seat_id="p1",
+            player_name="Hero",
+            hole_cards=("As", "Kd"),
+            stack=2100,
+            contribution=100,
+            position="dealer",
+            to_call=0,
+            public_table=public_view,
+        ),
+        acting_seat_id=None,
+        is_your_turn=False,
+    )
+
+    asyncio.run(agent.notify_update(update))
+
+    assert agent._reflection_note is None
+    assert len(agent._pending_hand_summaries) == 1
+
+
+def test_llm_player_agent_recent_hand_count_zero_disables_reflection() -> None:
+    client = RecordingOpenAIClient()
+    agent = LLMPlayerAgent(
+        "p1",
+        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        recent_hand_count=0,
+    )
+
+    public_view = PublicTableView(
+        hand_number=1,
+        phase=GamePhase.HAND_COMPLETE,
+        board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
+        pot_total=200,
+        current_bet=0,
+        dealer_seat_id="p1",
+        acting_seat_id=None,
+        small_blind=50,
+        big_blind=100,
+        seats=(
+            SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
+            SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
+        ),
+    )
+    update = PlayerUpdate(
+        update_type=PlayerUpdateType.HAND_COMPLETED,
+        events=(GameEvent("hand_started", {"hand_number": 1}), GameEvent("hand_completed", {"hand_number": 1})),
+        public_table_view=public_view,
+        player_view=PlayerView(
+            seat_id="p1",
+            player_name="Hero",
+            hole_cards=("As", "Kd"),
+            stack=2100,
+            contribution=100,
+            position="dealer",
+            to_call=0,
+            public_table=public_view,
+        ),
+        acting_seat_id=None,
+        is_your_turn=False,
+    )
+
+    asyncio.run(agent.notify_update(update))
+
+    assert client.chat.completions.calls == []
+    assert agent._pending_hand_summaries == []
+
+
+def test_llm_player_agent_action_prompt_includes_note_as_developer_context() -> None:
+    client = RecordingOpenAIClient(outputs=['{"action":"call"}'])
+    agent = LLMPlayerAgent(
+        "p1",
+        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+    )
+    agent._reflection_note = "Villain overfolds to river raises."
+
+    action = asyncio.run(agent.request_action(make_decision_request()))
+
+    assert action == PlayerAction(ActionType.CALL)
+    messages = client.chat.completions.calls[0]
+    assert messages[0] == {"role": "developer", "content": agent.system_prompt}
+    assert messages[1]["role"] == "developer"
+    assert "current observations from prior hands" in messages[1]["content"]
+    assert "Villain overfolds to river raises." in messages[1]["content"]
+    assert messages[-1]["role"] == "user"
+
+
+def test_llm_client_complete_text_returns_plain_text() -> None:
+    client = LLMGameClient(model="gpt-test", api_key="test", client=FakeOpenAIClient(outputs=["Some note text"]))
+
+    completion = asyncio.run(client.complete_text([{"role": "user", "content": "prompt"}]))
+
+    assert completion == "Some note text"
 
 
 def test_cli_player_agent_uses_legal_actions_only() -> None:
@@ -789,12 +1058,14 @@ def test_render_events_handles_chips_refunded() -> None:
 def test_render_events_handles_showdown_and_table_completed() -> None:
     events = (
         GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
+        GameEvent("showdown_revealed", {"seat_id": "p1", "hole_cards": ("As", "Kd"), "hand_label": "straight, ace-high"}),
         GameEvent("table_completed", {"reason": "not_enough_players", "hand_number": 1}),
     )
 
-    rendered = render_events(events)
+    rendered = render_events(events, seat_names={"p1": "Hero"})
 
     assert "Showdown, board: As Kh Qd Jc Tc" in rendered
+    assert "Hero showed As Kd: straight, ace-high" in rendered
     assert "Table completed (not_enough_players)" in rendered
 
 
@@ -818,3 +1089,26 @@ def test_render_telegram_chips_refunded_event() -> None:
     assert refund_msg is not None
     assert "💰" in refund_msg
     assert "200" in refund_msg
+
+
+def test_render_telegram_showdown_revealed_event() -> None:
+    decision = make_decision_request()
+    update = PlayerUpdate(
+        update_type=PlayerUpdateType.HAND_COMPLETED,
+        events=(
+            GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
+            GameEvent("showdown_revealed", {"seat_id": "p1", "hole_cards": ("As", "Kd"), "hand_label": "straight, ace-high"}),
+            GameEvent("hand_completed", {"hand_number": 1}),
+        ),
+        public_table_view=decision.public_table_view,
+        player_view=decision.player_view,
+        acting_seat_id=None,
+        is_your_turn=False,
+    )
+
+    messages = render_telegram_update_messages(update)
+
+    reveal_msg = next((m for m in messages if "showed" in m), None)
+    assert reveal_msg is not None
+    assert "straight, ace-high" in reveal_msg
+    assert "A" in reveal_msg

@@ -24,6 +24,7 @@ class LLMSettings:
     base_url: str | None = None
     timeout: float = 30.0
     max_output_tokens: int | None = None
+    recent_hand_count: int = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +67,7 @@ def load_project_config(path: str | Path = DEFAULT_CONFIG_PATH) -> ProjectConfig
         base_url=llm_raw.get("base_url"),
         timeout=float(llm_raw.get("timeout", 30.0)),
         max_output_tokens=_optional_int(llm_raw.get("max_output_tokens")),
+        recent_hand_count=int(llm_raw.get("recent_hand_count", 5)),
     )
     telegram = TelegramSettings(
         bot_token=telegram_raw.get("bot_token"),

@@ -202,6 +202,32 @@ def test_telegram_human_and_llm_seat_names_are_assigned_cleanly() -> None:
     assert "Nova_bot" in seat_names
 
 
+def test_telegram_llm_seats_receive_recent_hand_count_config() -> None:
+    app, _messages = make_app(
+        llm_name_allocator=BotNameAllocator(names=("Nova",), seed=1),
+    )
+    app.config = TelegramAppConfig(
+        bot_username="test_bot",
+        llm_model="gpt-test",
+        llm_api_key="test",
+        llm_recent_hand_count=7,
+    )
+
+    async def scenario() -> int:
+        await app.handle_create_table_command(user_id=1, chat_id=101)
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="1")
+        table = app.registry.get_user_table(1)
+        assert table is not None
+        await app.handle_start_game_command(user_id=1, chat_id=101)
+        llm_agent = table.player_agents["llm_1"]
+        return llm_agent.recent_hand_count
+
+    recent_hand_count = asyncio.run(scenario())
+
+    assert recent_hand_count == 7
+
+
 def test_lobby_buttons_work_as_text_commands() -> None:
     app, messages = make_app()
 
