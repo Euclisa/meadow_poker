@@ -398,7 +398,7 @@ class TelegramApp:
                 seat_id=seat_id,
                 user_id=user.user_id,
                 chat_id=user.chat_id,
-                send_message=self._send_message,
+                send_message=None if self._bot is not None else self._send_message,
                 bot=self._bot,
             )
 

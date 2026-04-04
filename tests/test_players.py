@@ -5,7 +5,12 @@ import pytest
 
 from poker_bot.players.cli import CLIPlayerAgent
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
-from poker_bot.players.rendering import render_events, render_player_update
+from poker_bot.players.rendering import (
+    render_events,
+    render_player_update,
+    render_telegram_status_panel,
+    render_telegram_update_messages,
+)
 from poker_bot.players.telegram import TelegramPlayerAgent
 from poker_bot.types import (
     ActionType,
@@ -372,11 +377,13 @@ def test_telegram_player_agent_builds_reply_keyboard_from_legal_actions() -> Non
     assert sent_messages
     chat_id, text, keyboard = sent_messages[0]
     assert chat_id == 42
-    assert "hand_started" not in text
-    assert "Seat: p1" not in text
-    assert "Player: Hero" in text
-    assert "Legal actions:" not in text
-    assert keyboard == ["Fold", "Call", "Raise 200-1900"]
+    assert "🂠 <b>Hero</b>" in text
+    assert "🃏 <code>A♠ K♦</code>" in text
+    assert "Pot: <b>150</b>  •  To call: <b>100</b>  •  Stack: <b>1900</b>" in text
+    assert keyboard is None
+    _chat_id, prompt_text, prompt_keyboard = sent_messages[1]
+    assert "Your move" in prompt_text
+    assert prompt_keyboard == ["Fold", "Call", "Raise 200-1900"]
 
 
 def test_telegram_player_agent_sends_immediate_update_messages() -> None:
@@ -394,10 +401,10 @@ def test_telegram_player_agent_sends_immediate_update_messages() -> None:
 
     asyncio.run(agent.notify_update(make_player_update()))
 
-    assert sent_messages
-    _chat_id, text, markup = sent_messages[0]
-    assert "Villain posted big blind 100" in text
-    assert markup is None
+    assert len(sent_messages) >= 3
+    assert "🂠 <b>Hero</b>" in sent_messages[0][1]
+    assert "Hand 1" in sent_messages[1][1]
+    assert "<i>Villain</i>: big blind 100" in sent_messages[2][1]
 
 
 def test_telegram_player_agent_bet_raise_requires_amount_and_validates_input() -> None:
@@ -476,3 +483,115 @@ def test_render_player_update_marks_turn_started() -> None:
     rendered = render_player_update(make_player_update(is_your_turn=True))
 
     assert "It is your turn." in rendered
+
+
+def test_render_telegram_status_panel_formats_cards_with_unicode_suits() -> None:
+    rendered = render_telegram_status_panel(make_decision_request().player_view)
+
+    assert "As Kd" not in rendered
+    assert "A♠ K♦" in rendered
+    assert "Current bet:" not in rendered
+    assert "Street:" not in rendered
+
+
+def test_render_telegram_update_messages_split_state_and_actions() -> None:
+    messages = render_telegram_update_messages(make_player_update())
+
+    assert len(messages) == 2
+    assert "Hand 1" in messages[0]
+    assert "<i>Villain</i>: big blind 100" in messages[1]
+
+
+def test_render_telegram_update_messages_preserve_event_order_across_kinds() -> None:
+    decision = make_decision_request()
+    update = PlayerUpdate(
+        update_type=PlayerUpdateType.TURN_STARTED,
+        events=(
+            GameEvent("action_applied", {"seat_id": "p1", "action": "call", "amount": 100}),
+            GameEvent("street_started", {"phase": "flop", "board_cards": ("3h", "4h", "Kd")}),
+            GameEvent("action_applied", {"seat_id": "p2", "action": "check"}),
+        ),
+        public_table_view=decision.public_table_view,
+        player_view=decision.player_view,
+        acting_seat_id="p1",
+        is_your_turn=True,
+    )
+
+    messages = render_telegram_update_messages(update)
+
+    assert messages == [
+        "<i>Hero</i>: call 100",
+        "🃏 <b>Flop</b>: <code>3♥ 4♥ K♦</code>",
+        "<i>Villain</i>: check",
+    ]
+
+
+def test_telegram_player_agent_does_not_duplicate_status_before_turn_prompt() -> None:
+    base_decision = make_decision_request()
+    turn_public = PublicTableView(
+        hand_number=1,
+        phase=GamePhase.FLOP,
+        board_cards=("3h", "4h", "Kd"),
+        pot_total=500,
+        current_bet=0,
+        dealer_seat_id="p1",
+        acting_seat_id="p1",
+        small_blind=50,
+        big_blind=100,
+        seats=base_decision.public_table_view.seats,
+    )
+    decision = DecisionRequest(
+        acting_seat_id="p1",
+        player_view=PlayerView(
+            seat_id="p1",
+            player_name="Hero",
+            hole_cards=("8c", "Jc"),
+            stack=1_800,
+            contribution=200,
+            position="dealer",
+            to_call=0,
+            public_table=turn_public,
+        ),
+        public_table_view=turn_public,
+        legal_actions=(LegalAction(ActionType.CHECK), LegalAction(ActionType.BET, min_amount=100, max_amount=1800)),
+    )
+    sent_messages: list[tuple[int, str, object | None]] = []
+
+    async def send_message(chat_id: int, text: str, reply_markup: object | None) -> None:
+        sent_messages.append((chat_id, text, reply_markup))
+
+    agent = TelegramPlayerAgent(
+        "p1",
+        user_id=99,
+        chat_id=42,
+        send_message=send_message,
+    )
+
+    async def exercise() -> None:
+        await agent.notify_update(
+            PlayerUpdate(
+                update_type=PlayerUpdateType.TURN_STARTED,
+                    events=(
+                        GameEvent("action_applied", {"seat_id": "p1", "action": "call", "amount": 100}),
+                        GameEvent("street_started", {"phase": "flop", "board_cards": ("3h", "4h", "Kd")}),
+                        GameEvent("action_applied", {"seat_id": "p2", "action": "check"}),
+                    ),
+                    public_table_view=turn_public,
+                    player_view=decision.player_view,
+                    acting_seat_id="p1",
+                    is_your_turn=True,
+                )
+            )
+        pending = asyncio.create_task(agent.request_action(decision))
+        await asyncio.sleep(0)
+        await agent.submit_text_action(user_id=99, chat_id=42, text="Check")
+        await pending
+
+    asyncio.run(exercise())
+
+    status_messages = [text for _chat_id, text, _markup in sent_messages if "Your hand:" in text]
+    if not status_messages:
+        status_messages = [text for _chat_id, text, _markup in sent_messages if "🂠 <b>Hero</b>" in text]
+    prompt_messages = [text for _chat_id, text, _markup in sent_messages if "Your move" in text]
+    assert len(status_messages) == 1
+    assert len(prompt_messages) == 1

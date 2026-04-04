@@ -5,7 +5,11 @@ import logging
 from typing import Any
 
 from poker_bot.players.base import PlayerAgent
-from poker_bot.players.rendering import render_decision_summary, render_player_update
+from poker_bot.players.rendering import (
+    render_telegram_status_panel,
+    render_telegram_turn_prompt,
+    render_telegram_update_messages,
+)
 from poker_bot.types import (
     ActionType,
     DecisionRequest,
@@ -34,6 +38,8 @@ class TelegramPlayerAgent(PlayerAgent):
         self._bot = bot
         self._pending_state: TelegramPendingActionState | None = None
         self._pending_future: asyncio.Future[PlayerAction] | None = None
+        self._status_message_id: int | None = None
+        self._last_status_text: str | None = None
 
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
         return await self.begin_pending_action(decision)
@@ -50,11 +56,8 @@ class TelegramPlayerAgent(PlayerAgent):
         )
         self._pending_future = asyncio.get_running_loop().create_future()
 
-        text = render_decision_summary(
-            decision,
-            show_seat_id=False,
-            show_legal_actions=False,
-        )
+        await self._sync_status_panel(decision.player_view)
+        text = render_telegram_turn_prompt(decision)
         logger.debug("Telegram pending action created seat_id=%s user_id=%s decision=%s", self.seat_id, self.user_id, decision)
         await self._dispatch_message(text, self._build_keyboard(decision))
         try:
@@ -94,7 +97,7 @@ class TelegramPlayerAgent(PlayerAgent):
             self._pending_state.awaiting_amount = True
             logger.debug("Telegram awaiting amount seat_id=%s action_type=%s", self.seat_id, action_type)
             await self._dispatch_message(
-                f"Enter total amount for {action_type.value} "
+                f"💬 Enter total amount for {action_type.value} "
                 f"({legal_action.min_amount}-{legal_action.max_amount}).",
                 None,
             )
@@ -130,16 +133,16 @@ class TelegramPlayerAgent(PlayerAgent):
             amount = int(amount_text.strip())
         except ValueError:
             logger.debug("Telegram invalid amount text seat_id=%s amount_text=%s", self.seat_id, amount_text)
-            await self._dispatch_message("Enter a numeric total amount.", None)
+            await self._dispatch_message("🔢 Enter a numeric total amount.", None)
             return True
 
         if legal_action.min_amount is not None and amount < legal_action.min_amount:
             logger.debug("Telegram amount too small seat_id=%s amount=%s min=%s", self.seat_id, amount, legal_action.min_amount)
-            await self._dispatch_message(f"Amount must be at least {legal_action.min_amount}.", None)
+            await self._dispatch_message(f"⚠️ Amount must be at least {legal_action.min_amount}.", None)
             return True
         if legal_action.max_amount is not None and amount > legal_action.max_amount:
             logger.debug("Telegram amount too large seat_id=%s amount=%s max=%s", self.seat_id, amount, legal_action.max_amount)
-            await self._dispatch_message(f"Amount must be at most {legal_action.max_amount}.", None)
+            await self._dispatch_message(f"⚠️ Amount must be at most {legal_action.max_amount}.", None)
             return True
 
         logger.debug(
@@ -164,10 +167,9 @@ class TelegramPlayerAgent(PlayerAgent):
         self._pending_state = None
 
     async def notify_update(self, update: PlayerUpdate) -> None:
-        if not update.events:
-            return
-        text = render_player_update(update, compact=not update.is_your_turn)
-        await self._dispatch_message(text, None)
+        await self._sync_status_panel(update.player_view)
+        for message in render_telegram_update_messages(update):
+            await self._dispatch_message(message, None)
 
     async def close(self) -> None:
         await self.cancel_pending_action("agent_closed")
@@ -189,7 +191,43 @@ class TelegramPlayerAgent(PlayerAgent):
             return
         if self._bot is None:
             raise RuntimeError("TelegramPlayerAgent requires either send_message or bot")
-        await self._bot.send_message(chat_id=self.chat_id, text=text, reply_markup=reply_markup)
+        await self._bot.send_message(
+            chat_id=self.chat_id,
+            text=text,
+            reply_markup=reply_markup,
+            parse_mode="HTML",
+        )
+
+    async def _sync_status_panel(self, view: Any) -> None:
+        text = render_telegram_status_panel(view)
+        if text == self._last_status_text:
+            return
+        self._last_status_text = text
+        if self._bot is None:
+            await self._dispatch_message(text, None)
+            return
+        if self._status_message_id is None:
+            message = await self._bot.send_message(
+                chat_id=self.chat_id,
+                text=text,
+                parse_mode="HTML",
+            )
+            self._status_message_id = getattr(message, "message_id", None)
+            return
+        try:
+            await self._bot.edit_message_text(
+                chat_id=self.chat_id,
+                message_id=self._status_message_id,
+                text=text,
+                parse_mode="HTML",
+            )
+        except Exception:  # pragma: no cover - Telegram fallback path
+            message = await self._bot.send_message(
+                chat_id=self.chat_id,
+                text=text,
+                parse_mode="HTML",
+            )
+            self._status_message_id = getattr(message, "message_id", None)
 
     def _build_keyboard(self, decision: DecisionRequest) -> Any | None:
         if self._bot is None:
