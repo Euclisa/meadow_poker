@@ -9,6 +9,7 @@ import {
 } from "./shared.js";
 
 import { renderStatusMarkup } from "./table-render.js";
+import { morph } from "./morph.js";
 
 const appRoot = document.getElementById("app");
 const tableId = document.body.dataset.tableId;
@@ -46,33 +47,53 @@ export function renderTableMarkup(snapshot) {
   });
 }
 
-function render() {
-  appRoot.innerHTML = renderTableMarkup(state.snapshot);
+let initialized = false;
 
-  document.getElementById("copy-share-link")?.addEventListener("click", async () => {
-    if (!state.snapshot) {
+function render() {
+  const html = renderTableMarkup(state.snapshot);
+  if (initialized) {
+    morph(appRoot, html);
+  } else {
+    appRoot.innerHTML = html;
+    initialized = true;
+    bindDelegatedEvents();
+  }
+}
+
+function bindDelegatedEvents() {
+  appRoot.addEventListener("click", (event) => {
+    const target = event.target.closest("[id], [data-action-type], .copy-share-button");
+    if (!target) return;
+
+    if (target.id === "copy-share-link") {
+      if (!state.snapshot) return;
+      copyText(tableShareUrl(state.snapshot.controls.share_path)).then(() => {
+        setFlash("Share link copied to the clipboard.", "success");
+      });
       return;
     }
-    await copyText(tableShareUrl(state.snapshot.controls.share_path));
-    setFlash("Share link copied to the clipboard.", "success");
+
+    if (target.id === "start-table-button") { performTableCommand("start"); return; }
+    if (target.id === "cancel-table-button") { performTableCommand("cancel"); return; }
+    if (target.id === "leave-table-button") { performTableCommand("leave"); return; }
+
+    if (target.dataset.actionType) {
+      submitAction(target.dataset.actionType);
+    }
   });
 
-  document.getElementById("join-seat-name")?.addEventListener("input", (event) => {
-    state.joinName = event.currentTarget.value;
+  appRoot.addEventListener("input", (event) => {
+    const target = event.target;
+    if (target.id === "join-seat-name") { state.joinName = target.value; }
+    if (target.id === "action-amount") { state.actionAmount = target.value; }
   });
 
-  document.getElementById("action-amount")?.addEventListener("input", (event) => {
-    state.actionAmount = event.currentTarget.value;
+  appRoot.addEventListener("submit", (event) => {
+    const form = event.target.closest("form");
+    if (form?.id === "join-seat-form") {
+      onJoinSeat(event);
+    }
   });
-
-  document.getElementById("join-seat-form")?.addEventListener("submit", onJoinSeat);
-  document.getElementById("start-table-button")?.addEventListener("click", () => performTableCommand("start"));
-  document.getElementById("cancel-table-button")?.addEventListener("click", () => performTableCommand("cancel"));
-  document.getElementById("leave-table-button")?.addEventListener("click", () => performTableCommand("leave"));
-
-  for (const button of document.querySelectorAll("[data-action-type]")) {
-    button.addEventListener("click", () => submitAction(button.dataset.actionType));
-  }
 }
 
 async function onJoinSeat(event) {

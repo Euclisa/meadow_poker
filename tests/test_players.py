@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import pytest
 
+from poker_bot.config import LLMSettings, OpenRouterSettings
 from poker_bot.players.cli import CLIPlayerAgent
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
 from poker_bot.players.rendering import (
@@ -83,6 +84,7 @@ def make_player_update(*, is_your_turn: bool = False) -> PlayerUpdate:
 class FakeResponsesAPI:
     def __init__(self, outputs: list[str] | None = None) -> None:
         self.messages_list: list[list[dict[str, str]]] = []
+        self.request_payloads: list[dict[str, object]] = []
         self.outputs = list(outputs or ['{"action":"raise","amount":400}'])
 
     async def create(
@@ -91,8 +93,17 @@ class FakeResponsesAPI:
         model: str,
         messages: list[dict[str, str]],
         max_output_tokens: int | None = None,
+        extra_body: dict[str, object] | None = None,
     ) -> object:
         self.messages_list.append(messages)
+        self.request_payloads.append(
+            {
+                "model": model,
+                "messages": messages,
+                "max_output_tokens": max_output_tokens,
+                "extra_body": extra_body,
+            }
+        )
         output = self.outputs.pop(0)
         message = type("Message", (), {"content": output})()
         choice = type("Choice", (), {"message": message})()
@@ -109,7 +120,7 @@ def test_llm_player_prompt_includes_buffered_updates_and_parses_json() -> None:
     client = FakeOpenAIClient()
     agent = LLMPlayerAgent(
         "p1",
-        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        client=LLMGameClient(settings=LLMSettings(model="gpt-test", api_key="test"), client=client),
     )
 
     async def exercise() -> PlayerAction:
@@ -137,6 +148,7 @@ class FallbackResponsesAPI:
         model: str,
         messages: list[dict[str, str]],
         max_output_tokens: int | None = None,
+        extra_body: dict[str, object] | None = None,
     ) -> object:
         message = type(
             "Message",
@@ -157,7 +169,10 @@ class FallbackOpenAIClient:
 
 
 def test_llm_client_extracts_first_json_object_from_mixed_text() -> None:
-    client = LLMGameClient(model="gpt-test", api_key="test", client=FallbackOpenAIClient())
+    client = LLMGameClient(
+        settings=LLMSettings(model="gpt-test", api_key="test"),
+        client=FallbackOpenAIClient(),
+    )
 
     completion = asyncio.run(client.complete_json([{"role": "user", "content": "prompt"}]))
 
@@ -171,6 +186,7 @@ class ReasoningOnlyResponsesAPI:
         model: str,
         messages: list[dict[str, str]],
         max_output_tokens: int | None = None,
+        extra_body: dict[str, object] | None = None,
     ) -> object:
         message = type("Message", (), {"content": None})()
         choice = type("Choice", (), {"message": message})()
@@ -183,7 +199,10 @@ class ReasoningOnlyOpenAIClient:
 
 
 def test_llm_client_rejects_reasoning_only_responses() -> None:
-    client = LLMGameClient(model="gpt-test", api_key="test", client=ReasoningOnlyOpenAIClient())
+    client = LLMGameClient(
+        settings=LLMSettings(model="gpt-test", api_key="test"),
+        client=ReasoningOnlyOpenAIClient(),
+    )
 
     with pytest.raises(ValueError, match="text output"):
         asyncio.run(client.complete_json([{"role": "user", "content": "prompt"}]))
@@ -192,6 +211,7 @@ def test_llm_client_rejects_reasoning_only_responses() -> None:
 class RecordingCompletionsAPI:
     def __init__(self, outputs: list[str] | None = None, *, fail_on_call: int | None = None) -> None:
         self.calls: list[list[dict[str, str]]] = []
+        self.request_payloads: list[dict[str, object]] = []
         self.outputs = list(outputs) if outputs is not None else ['{"action":"check"}']
         self.fail_on_call = fail_on_call
         self.call_count = 0
@@ -202,9 +222,18 @@ class RecordingCompletionsAPI:
         model: str,
         messages: list[dict[str, str]],
         max_output_tokens: int | None = None,
+        extra_body: dict[str, object] | None = None,
     ) -> object:
         self.call_count += 1
         self.calls.append(messages)
+        self.request_payloads.append(
+            {
+                "model": model,
+                "messages": messages,
+                "max_output_tokens": max_output_tokens,
+                "extra_body": extra_body,
+            }
+        )
         if self.fail_on_call == self.call_count:
             raise RuntimeError("forced failure")
         output = self.outputs.pop(0)
@@ -222,7 +251,7 @@ def test_llm_player_agent_keeps_history_within_hand_and_resets_next_hand() -> No
     client = RecordingOpenAIClient(outputs=['{"action":"check"}', '{"action":"check"}', "Opponent tendencies\n- Villain checks often", '{"action":"check"}'])
     agent = LLMPlayerAgent(
         "p1",
-        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        client=LLMGameClient(settings=LLMSettings(model="gpt-test", api_key="test"), client=client),
         recent_hand_count=1,
     )
     first = make_decision_request()
@@ -362,7 +391,7 @@ def test_llm_player_agent_reflects_and_clears_pending_summaries() -> None:
     client = RecordingOpenAIClient(outputs=["Initial note"])
     agent = LLMPlayerAgent(
         "p1",
-        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        client=LLMGameClient(settings=LLMSettings(model="gpt-test", api_key="test"), client=client),
         recent_hand_count=1,
     )
 
@@ -420,7 +449,7 @@ def test_llm_player_agent_uses_previous_note_during_later_reflection() -> None:
     client = RecordingOpenAIClient(outputs=["First note", "Revised note"])
     agent = LLMPlayerAgent(
         "p1",
-        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        client=LLMGameClient(settings=LLMSettings(model="gpt-test", api_key="test"), client=client),
         recent_hand_count=1,
     )
 
@@ -480,7 +509,7 @@ def test_llm_player_agent_keeps_pending_summaries_when_reflection_fails() -> Non
     client = RecordingOpenAIClient(outputs=[], fail_on_call=1)
     agent = LLMPlayerAgent(
         "p1",
-        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        client=LLMGameClient(settings=LLMSettings(model="gpt-test", api_key="test"), client=client),
         recent_hand_count=1,
     )
 
@@ -533,7 +562,7 @@ def test_llm_player_agent_recent_hand_count_zero_disables_reflection() -> None:
     client = RecordingOpenAIClient()
     agent = LLMPlayerAgent(
         "p1",
-        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        client=LLMGameClient(settings=LLMSettings(model="gpt-test", api_key="test"), client=client),
         recent_hand_count=0,
     )
 
@@ -580,7 +609,7 @@ def test_llm_player_agent_logs_thoughts_when_enabled(caplog: pytest.LogCaptureFi
     client = RecordingOpenAIClient(outputs=["Updated note"])
     agent = LLMPlayerAgent(
         "p1",
-        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        client=LLMGameClient(settings=LLMSettings(model="gpt-test", api_key="test"), client=client),
         recent_hand_count=1,
         log_thoughts=True,
     )
@@ -649,7 +678,7 @@ def test_llm_player_agent_action_prompt_includes_note_as_developer_context() -> 
     client = RecordingOpenAIClient(outputs=['{"action":"call"}'])
     agent = LLMPlayerAgent(
         "p1",
-        client=LLMGameClient(model="gpt-test", api_key="test", client=client),
+        client=LLMGameClient(settings=LLMSettings(model="gpt-test", api_key="test"), client=client),
     )
     agent._reflection_note = "Villain overfolds to river raises."
 
@@ -665,11 +694,49 @@ def test_llm_player_agent_action_prompt_includes_note_as_developer_context() -> 
 
 
 def test_llm_client_complete_text_returns_plain_text() -> None:
-    client = LLMGameClient(model="gpt-test", api_key="test", client=FakeOpenAIClient(outputs=["Some note text"]))
+    client = LLMGameClient(
+        settings=LLMSettings(model="gpt-test", api_key="test"),
+        client=FakeOpenAIClient(outputs=["Some note text"]),
+    )
 
     completion = asyncio.run(client.complete_text([{"role": "user", "content": "prompt"}]))
 
     assert completion == "Some note text"
+
+
+def test_llm_client_sends_openrouter_extra_body_when_provider_settings_match() -> None:
+    openai_client = FakeOpenAIClient(outputs=['{"action":"check"}'])
+    client = LLMGameClient(
+        settings=LLMSettings(
+            model="gpt-test",
+            api_key="test",
+            base_url="https://openrouter.ai/api/v1",
+            provider_settings=OpenRouterSettings(sort="throughput"),
+        ),
+        client=openai_client,
+    )
+
+    asyncio.run(client.complete_text([{"role": "user", "content": "prompt"}]))
+
+    assert openai_client.chat.completions.request_payloads[0]["extra_body"] == {
+        "provider": {"sort": "throughput"}
+    }
+
+
+def test_llm_client_skips_extra_body_without_active_provider_settings() -> None:
+    openai_client = FakeOpenAIClient(outputs=['{"action":"check"}'])
+    client = LLMGameClient(
+        settings=LLMSettings(
+            model="gpt-test",
+            api_key="test",
+            base_url="https://api.openai.com/v1",
+        ),
+        client=openai_client,
+    )
+
+    asyncio.run(client.complete_text([{"role": "user", "content": "prompt"}]))
+
+    assert openai_client.chat.completions.request_payloads[0]["extra_body"] is None
 
 
 def test_cli_player_agent_uses_legal_actions_only() -> None:

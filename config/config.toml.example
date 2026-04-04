@@ -14,6 +14,10 @@ timeout = 60.0
 recent_hand_count = 5
 log_thoughts = false
 
+[llm.openrouter]
+# Optional. Applied only when llm.base_url points to openrouter.ai.
+# sort = "throughput"
+
 [telegram]
 bot_token = "replace-with-telegram-bot-token"
 bot_username = "your_bot_username"

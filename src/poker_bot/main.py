@@ -69,11 +69,7 @@ async def run_cli_mode(config: ProjectConfig, *, players_spec: str, max_hands: i
             seats.append(SeatConfig(seat_id=seat_id, name=llm_names.allocate()))
             if llm_client is None:
                 llm_client = LLMGameClient(
-                    model=config.llm.model,
-                    api_key=config.llm.api_key,
-                    base_url=config.llm.base_url,
-                    timeout=config.llm.timeout,
-                    max_output_tokens=config.llm.max_output_tokens,
+                    settings=config.llm,
                 )
             agents[seat_id] = LLMPlayerAgent(
                 seat_id,
@@ -104,13 +100,7 @@ async def run_telegram_mode(config: ProjectConfig) -> None:
         TelegramAppConfig(
             bot_token=config.telegram.bot_token,
             bot_username=config.telegram.bot_username,
-            llm_model=config.llm.model,
-            llm_api_key=config.llm.api_key,
-            llm_base_url=config.llm.base_url,
-            llm_timeout=config.llm.timeout,
-            llm_max_output_tokens=config.llm.max_output_tokens,
-            llm_recent_hand_count=config.llm.recent_hand_count,
-            llm_log_thoughts=config.llm.log_thoughts,
+            llm=config.llm,
             small_blind=config.game.small_blind,
             big_blind=config.game.big_blind,
             starting_stack=config.game.starting_stack,
@@ -129,13 +119,7 @@ async def run_web_mode(config: ProjectConfig) -> None:
         WebAppConfig(
             host=config.web.host,
             port=config.web.port,
-            llm_model=config.llm.model,
-            llm_api_key=config.llm.api_key,
-            llm_base_url=config.llm.base_url,
-            llm_timeout=config.llm.timeout,
-            llm_max_output_tokens=config.llm.max_output_tokens,
-            llm_recent_hand_count=config.llm.recent_hand_count,
-            llm_log_thoughts=config.llm.log_thoughts,
+            llm=config.llm,
             small_blind=config.game.small_blind,
             big_blind=config.game.big_blind,
             starting_stack=config.game.starting_stack,

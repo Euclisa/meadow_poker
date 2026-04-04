@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+from poker_bot.config import LLMSettings
 from poker_bot.players.llm import LLMGameClient
 from poker_bot.naming import BotNameAllocator
 from poker_bot.telegram_app.app import TelegramApp, TelegramAppConfig
@@ -19,6 +20,7 @@ class FakeResponsesAPI:
         model: str,
         messages: list[dict[str, str]],
         max_output_tokens: int | None = None,
+        extra_body: dict | None = None,
     ) -> object:
         self.messages_list.append(messages)
         output = self.outputs.pop(0) if self.outputs else '{"action":"check"}'
@@ -46,13 +48,15 @@ def make_app(
     llm_outputs = llm_outputs or ['{"action":"check"}'] * 20
 
     def make_llm_client() -> LLMGameClient:
-        return LLMGameClient(model="gpt-test", api_key="test", client=FakeOpenAIClient(list(llm_outputs)))
+        return LLMGameClient(
+            settings=LLMSettings(model="gpt-test", api_key="test"),
+            client=FakeOpenAIClient(list(llm_outputs)),
+        )
 
     app = TelegramApp(
         TelegramAppConfig(
             bot_username="test_bot",
-            llm_model="gpt-test",
-            llm_api_key="test",
+            llm=LLMSettings(model="gpt-test", api_key="test"),
             max_hands_per_table=max_hands,
         ),
         send_message=send_message,
@@ -266,9 +270,7 @@ def test_telegram_llm_seats_receive_recent_hand_count_config() -> None:
     )
     app.config = TelegramAppConfig(
         bot_username="test_bot",
-        llm_model="gpt-test",
-        llm_api_key="test",
-        llm_recent_hand_count=7,
+        llm=LLMSettings(model="gpt-test", api_key="test", recent_hand_count=7),
     )
 
     async def scenario() -> int:

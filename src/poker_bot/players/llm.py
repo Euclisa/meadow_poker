@@ -6,6 +6,7 @@ from json import JSONDecodeError
 from dataclasses import dataclass
 from typing import Any
 
+from poker_bot.config import LLMSettings
 from poker_bot.players.base import PlayerAgent
 from poker_bot.players.rendering import render_events, render_player_update
 from poker_bot.types import (
@@ -30,26 +31,18 @@ class LLMGameClient:
     def __init__(
         self,
         *,
-        model: str,
-        api_key: str,
-        base_url: str | None = None,
-        timeout: float = 30.0,
-        max_output_tokens: int | None = None,
+        settings: LLMSettings,
         retries: int = 2,
         client: Any | None = None,
     ) -> None:
-        self.model = model
-        self.api_key = api_key
-        self.base_url = base_url
-        self.timeout = timeout
-        self.max_output_tokens = max_output_tokens
+        self.settings = settings
         self.retries = retries
         self._client = client
 
     async def complete_json(self, messages: list[dict[str, str]]) -> LLMCompletionResult:
         raw_text = await self.complete_text(messages)
         parsed = self._parse_json_payload(raw_text)
-        logger.debug("LLM parsed JSON model=%s payload=%s", self.model, parsed)
+        logger.debug("LLM parsed JSON model=%s payload=%s", self.settings.model, parsed)
         return LLMCompletionResult(payload=parsed, raw_text=raw_text)
 
     async def complete_text(self, messages: list[dict[str, str]]) -> str:
@@ -57,25 +50,28 @@ class LLMGameClient:
         last_error: Exception | None = None
         logger.debug(
             "LLM request start model=%s base_url=%s timeout=%s max_output_tokens=%s retries=%s messages=%s",
-            self.model,
-            self.base_url,
-            self.timeout,
-            self.max_output_tokens,
+            self.settings.model,
+            self.settings.base_url,
+            self.settings.timeout,
+            self.settings.max_output_tokens,
             self.retries,
             messages,
         )
         for attempt in range(self.retries + 1):
             try:
-                logger.debug("LLM request attempt=%s model=%s", attempt + 1, self.model)
+                logger.debug("LLM request attempt=%s model=%s", attempt + 1, self.settings.model)
                 request_payload: dict[str, Any] = {
-                    "model": self.model,
+                    "model": self.settings.model,
                     "messages": messages,
                 }
-                if self.max_output_tokens is not None:
-                    request_payload["max_output_tokens"] = self.max_output_tokens
+                if self.settings.max_output_tokens is not None:
+                    request_payload["max_output_tokens"] = self.settings.max_output_tokens
+                extra_body = self.settings.to_extra_body()
+                if extra_body:
+                    request_payload["extra_body"] = extra_body
                 response = await client.chat.completions.create(**request_payload)
                 raw_text = self._extract_chat_completion_text(response)
-                logger.debug("LLM raw response model=%s raw_text=%s", self.model, raw_text)
+                logger.debug("LLM raw response model=%s raw_text=%s", self.settings.model, raw_text)
                 return raw_text
             except Exception as exc:  # pragma: no cover - defensive provider wrapper
                 last_error = exc
@@ -84,7 +80,7 @@ class LLMGameClient:
                     "LLM request failed attempt=%s/%s model=%s",
                     attempt + 1,
                     self.retries + 1,
-                    self.model,
+                    self.settings.model,
                 )
                 logger.debug("LLM failure details response_dump=%s", response_dump)
         assert last_error is not None
@@ -101,9 +97,9 @@ class LLMGameClient:
             ) from exc
 
         self._client = AsyncOpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url,
-            timeout=self.timeout,
+            api_key=self.settings.api_key,
+            base_url=self.settings.base_url,
+            timeout=self.settings.timeout,
         )
         return self._client
 

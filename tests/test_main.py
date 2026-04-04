@@ -18,17 +18,9 @@ class RecordingLLMGameClient:
     def __init__(
         self,
         *,
-        model: str | None,
-        api_key: str | None,
-        base_url: str | None,
-        timeout: float,
-        max_output_tokens: int | None,
+        settings: LLMSettings,
     ) -> None:
-        self.model = model
-        self.api_key = api_key
-        self.base_url = base_url
-        self.timeout = timeout
-        self.max_output_tokens = max_output_tokens
+        self.settings = settings
 
 
 class RecordingLLMPlayerAgent:
@@ -105,6 +97,7 @@ def test_run_cli_mode_passes_llm_log_thoughts(monkeypatch: pytest.MonkeyPatch) -
     orchestrator = RecordingOrchestrator.last_instance
     assert orchestrator is not None
     assert orchestrator.agents["p2"].log_thoughts is True
+    assert orchestrator.agents["p2"].client.settings.log_thoughts is True
 
 
 def test_run_cli_mode_rejects_duplicate_human_names_case_insensitively() -> None:

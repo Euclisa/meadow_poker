@@ -9,6 +9,8 @@ import {
   tableShareUrl,
 } from "./shared.js";
 
+import { morph } from "./morph.js";
+
 const appRoot = document.getElementById("app");
 
 const state = {
@@ -173,36 +175,55 @@ export function renderLobbyMarkup(model) {
   `;
 }
 
+let initialized = false;
+
 function render() {
-  appRoot.innerHTML = renderLobbyMarkup(state);
-
-  const totalSeatsInput = document.getElementById("create-total-seats");
-  const llmSeatsInput = document.getElementById("create-llm-seats");
-  syncLlmSeatOptions(totalSeatsInput, llmSeatsInput);
-
-  document.getElementById("create-name")?.addEventListener("input", (event) => {
-    state.createName = event.currentTarget.value;
-  });
-  document.getElementById("join-name")?.addEventListener("input", (event) => {
-    state.joinName = event.currentTarget.value;
-  });
-  document.getElementById("join-code")?.addEventListener("input", (event) => {
-    state.joinCode = event.currentTarget.value.trim();
-  });
-  totalSeatsInput?.addEventListener("change", () => syncLlmSeatOptions(totalSeatsInput, llmSeatsInput));
-  document.getElementById("create-table-form")?.addEventListener("submit", onCreateTable);
-  document.getElementById("join-table-form")?.addEventListener("submit", onJoinTable);
-
-  for (const button of document.querySelectorAll(".copy-share-button")) {
-    button.addEventListener("click", async (event) => {
-      const sharePath = event.currentTarget.dataset.sharePath;
-      await copyText(tableShareUrl(sharePath));
-      setFlash("Share link copied to the clipboard.", "success");
-    });
+  const html = renderLobbyMarkup(state);
+  if (initialized) {
+    morph(appRoot, html);
+  } else {
+    appRoot.innerHTML = html;
+    initialized = true;
+    bindDelegatedEvents();
   }
+
+  syncLlmSeatOptions();
 }
 
-function syncLlmSeatOptions(totalSeatsInput, llmSeatsInput) {
+function bindDelegatedEvents() {
+  appRoot.addEventListener("click", (event) => {
+    const copyBtn = event.target.closest(".copy-share-button");
+    if (copyBtn) {
+      const sharePath = copyBtn.dataset.sharePath;
+      copyText(tableShareUrl(sharePath)).then(() => {
+        setFlash("Share link copied to the clipboard.", "success");
+      });
+    }
+  });
+
+  appRoot.addEventListener("input", (event) => {
+    const target = event.target;
+    if (target.id === "create-name") { state.createName = target.value; }
+    if (target.id === "join-name") { state.joinName = target.value; }
+    if (target.id === "join-code") { state.joinCode = target.value.trim(); }
+  });
+
+  appRoot.addEventListener("change", (event) => {
+    if (event.target.id === "create-total-seats") {
+      syncLlmSeatOptions();
+    }
+  });
+
+  appRoot.addEventListener("submit", (event) => {
+    const form = event.target.closest("form");
+    if (form?.id === "create-table-form") { onCreateTable(event); }
+    if (form?.id === "join-table-form") { onJoinTable(event); }
+  });
+}
+
+function syncLlmSeatOptions() {
+  const totalSeatsInput = document.getElementById("create-total-seats");
+  const llmSeatsInput = document.getElementById("create-llm-seats");
   if (!totalSeatsInput || !llmSeatsInput) {
     return;
   }
@@ -217,12 +238,12 @@ function syncLlmSeatOptions(totalSeatsInput, llmSeatsInput) {
 
 async function onCreateTable(event) {
   event.preventDefault();
+  const form = new FormData(event.target.closest("form"));
   clearFlash();
   state.busy = true;
   render();
 
   try {
-    const form = new FormData(event.currentTarget);
     const payload = await requestJson("/api/tables", {
       method: "POST",
       body: JSON.stringify({
@@ -242,12 +263,12 @@ async function onCreateTable(event) {
 
 async function onJoinTable(event) {
   event.preventDefault();
+  const form = new FormData(event.target.closest("form"));
   clearFlash();
   state.busy = true;
   render();
 
   try {
-    const form = new FormData(event.currentTarget);
     const tableId = String(form.get("table_code") || "").trim();
     const payload = await requestJson(`/api/tables/${tableId}/join`, {
       method: "POST",

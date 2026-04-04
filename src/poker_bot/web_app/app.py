@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 from typing import Any
 
+from poker_bot.config import LLMSettings
 from poker_bot.naming import BotNameAllocator
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
@@ -30,13 +31,7 @@ class WebAppConfig:
     big_blind: int = 100
     starting_stack: int = 2_000
     max_players: int = 6
-    llm_model: str | None = None
-    llm_api_key: str | None = None
-    llm_base_url: str | None = None
-    llm_timeout: float = 30.0
-    llm_max_output_tokens: int | None = None
-    llm_recent_hand_count: int = 5
-    llm_log_thoughts: bool = False
+    llm: LLMSettings = field(default_factory=LLMSettings)
     max_hands_per_table: int | None = None
 
 
@@ -317,8 +312,8 @@ class WebApp:
             player_agents[seat_id] = LLMPlayerAgent(
                 seat_id=seat_id,
                 client=self._llm_client_factory(),
-                recent_hand_count=self.config.llm_recent_hand_count,
-                log_thoughts=self.config.llm_log_thoughts,
+                recent_hand_count=self.config.llm.recent_hand_count,
+                log_thoughts=self.config.llm.log_thoughts,
             )
 
         engine = PokerEngine.create_table(
@@ -473,14 +468,10 @@ class WebApp:
             )
 
     def _default_llm_client_factory(self) -> LLMGameClient:
-        if self.config.llm_model is None or self.config.llm_api_key is None:
+        if self.config.llm.model is None or self.config.llm.api_key is None:
             raise RuntimeError("LLM model and API key are required to create LLM seats")
         return LLMGameClient(
-            model=self.config.llm_model,
-            api_key=self.config.llm_api_key,
-            base_url=self.config.llm_base_url,
-            timeout=self.config.llm_timeout,
-            max_output_tokens=self.config.llm_max_output_tokens,
+            settings=self.config.llm,
         )
 
     def _allocate_llm_name(self) -> str:

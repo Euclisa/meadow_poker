@@ -4,6 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from poker_bot.config import LLMSettings
 from poker_bot.naming import BotNameAllocator
 from poker_bot.players.llm import LLMGameClient
 from poker_bot.web_app.app import WebApp, WebAppConfig
@@ -19,6 +20,7 @@ class FakeResponsesAPI:
         model: str,
         messages: list[dict[str, str]],
         max_output_tokens: int | None = None,
+        extra_body: dict | None = None,
     ) -> object:
         output = self.outputs.pop(0) if self.outputs else '{"action":"check"}'
         message = type("Message", (), {"content": output})()
@@ -40,15 +42,19 @@ def make_web_app(
 
     def make_llm_client() -> LLMGameClient:
         return LLMGameClient(
-            model="gpt-test",
-            api_key="test",
+            settings=LLMSettings(
+                model="gpt-test",
+                api_key="test",
+            ),
             client=FakeOpenAIClient(list(llm_outputs)),
         )
 
     return WebApp(
         WebAppConfig(
-            llm_model="gpt-test",
-            llm_api_key="test",
+            llm=LLMSettings(
+                model="gpt-test",
+                api_key="test",
+            ),
             max_hands_per_table=max_hands,
         ),
         llm_client_factory=make_llm_client,
