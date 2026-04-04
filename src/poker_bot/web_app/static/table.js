@@ -178,26 +178,28 @@ function renderSeatPanel({ seat, publicTable, playerView, seatCount, displayInde
       class="table-seat${seat.is_viewer ? " table-seat--viewer" : ""}${seat.seat_id === publicTable.acting_seat_id ? " table-seat--acting" : ""}${seat.folded ? " table-seat--folded" : ""}"
       style="${style}"
     >
-      <div class="table-seat__top">
-        <span class="table-seat__name">${escapeHtml(seat.name)}</span>
-        <div class="table-seat__badges">
+      ${cardsMarkup ? `<div class="table-seat__cards">${cardsMarkup}</div>` : ""}
+      <div class="table-seat__info">
+        <div class="table-seat__top">
+          <span class="table-seat__name">${escapeHtml(seat.name)}</span>
+          <div class="table-seat__badges">
+            ${
+              positionLabel
+                ? `<span class="seat-badge" title="${escapeHtml(positionTitle)}">${escapeHtml(positionLabel)}</span>`
+                : ""
+            }
+            ${seat.is_viewer ? '<span class="seat-badge seat-badge--you">You</span>' : ""}
+          </div>
+        </div>
+        <div class="table-seat__meta">
+          <span class="table-seat__stack">${formatChips(seat.stack)}$</span>
           ${
-            positionLabel
-              ? `<span class="seat-badge" title="${escapeHtml(positionTitle)}">${escapeHtml(positionLabel)}</span>`
+            status
+              ? `<span class="table-seat__state table-seat__state--${status.tone}">${escapeHtml(status.label)}</span>`
               : ""
           }
-          ${seat.is_viewer ? '<span class="seat-badge seat-badge--you">You</span>' : ""}
         </div>
       </div>
-      <div class="table-seat__meta">
-        <span class="table-seat__stack">${formatChips(seat.stack)}$</span>
-        ${
-          status
-            ? `<span class="table-seat__state table-seat__state--${status.tone}">${escapeHtml(status.label)}</span>`
-            : ""
-        }
-      </div>
-      <div class="table-seat__cards">${cardsMarkup}</div>
     </article>
   `;
 }
@@ -383,8 +385,8 @@ function orderSeatsForDisplay(seats, viewerSeatId) {
 }
 
 function seatPositionStyle(displayIndex, seatCount) {
-  const radiusX = seatCount <= 3 ? 37.5 : seatCount <= 5 ? 40 : 42;
-  const radiusY = seatCount <= 3 ? 37 : 39;
+  const radiusX = seatCount <= 3 ? 35 : seatCount <= 5 ? 37.5 : 39.5;
+  const radiusY = seatCount <= 3 ? 32 : 34;
   let angleDegrees = 90;
 
   if (displayIndex > 0) {
