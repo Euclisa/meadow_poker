@@ -32,10 +32,17 @@ class RecordingLLMGameClient:
 
 
 class RecordingLLMPlayerAgent:
-    def __init__(self, seat_id: str, client: RecordingLLMGameClient, recent_hand_count: int = 5) -> None:
+    def __init__(
+        self,
+        seat_id: str,
+        client: RecordingLLMGameClient,
+        recent_hand_count: int = 5,
+        log_thoughts: bool = False,
+    ) -> None:
         self.seat_id = seat_id
         self.client = client
         self.recent_hand_count = recent_hand_count
+        self.log_thoughts = log_thoughts
 
 
 class RecordingOrchestrator:
@@ -77,7 +84,27 @@ def test_run_cli_mode_assigns_human_names_and_bot_seats(monkeypatch: pytest.Monk
     assert isinstance(orchestrator.agents["p2"], RecordingLLMPlayerAgent)
     assert isinstance(orchestrator.agents["p3"], RecordingCLIPlayerAgent)
     assert orchestrator.agents["p2"].recent_hand_count == 5
+    assert orchestrator.agents["p2"].log_thoughts is False
     assert orchestrator.max_hands == 7
+
+
+def test_run_cli_mode_passes_llm_log_thoughts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main_module, "CLIPlayerAgent", RecordingCLIPlayerAgent)
+    monkeypatch.setattr(main_module, "LLMGameClient", RecordingLLMGameClient)
+    monkeypatch.setattr(main_module, "LLMPlayerAgent", RecordingLLMPlayerAgent)
+    monkeypatch.setattr(main_module, "GameOrchestrator", RecordingOrchestrator)
+
+    config = ProjectConfig(
+        game=GameSettings(),
+        llm=LLMSettings(model="gpt-test", api_key="test", log_thoughts=True),
+        telegram=TelegramSettings(),
+    )
+
+    asyncio.run(run_cli_mode(config, players_spec="Alice,bot", max_hands=1))
+
+    orchestrator = RecordingOrchestrator.last_instance
+    assert orchestrator is not None
+    assert orchestrator.agents["p2"].log_thoughts is True
 
 
 def test_run_cli_mode_rejects_duplicate_human_names_case_insensitively() -> None:
