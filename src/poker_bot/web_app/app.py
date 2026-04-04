@@ -498,11 +498,11 @@ class WebApp:
                 "  <meta charset=\"utf-8\">",
                 "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
                 f"  <title>{title}</title>",
-                "  <link rel=\"stylesheet\" href=\"/static/styles.css\">",
+                "  <link rel=\"stylesheet\" href=\"/static/css/styles.css\">",
                 "</head>",
                 f"<body {body_attributes}>",
                 "  <div id=\"app\"></div>",
-                f"  <script type=\"module\" src=\"/static/{script_name}\"></script>",
+                f"  <script type=\"module\" src=\"/static/js/{script_name}\"></script>",
                 "</body>",
                 "</html>",
             ]

@@ -1,0 +1,91 @@
+.card-row {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.card-row--board {
+  justify-content: center;
+}
+
+.playing-card {
+  position: relative;
+  width: 4rem;
+  height: 5.55rem;
+  border-radius: 18px;
+  border: 1px solid rgba(71, 104, 83, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(244, 240, 231, 0.98));
+  color: var(--ink);
+  box-shadow: 0 10px 28px rgba(47, 72, 56, 0.18);
+  display: inline-flex;
+  align-items: stretch;
+  justify-content: space-between;
+  padding: 0.45rem;
+  animation: settle-in 320ms ease;
+}
+
+.playing-card--large {
+  width: 4.5rem;
+  height: 6.2rem;
+}
+
+.playing-card__corner {
+  display: grid;
+  gap: 0.02rem;
+  align-content: start;
+}
+
+.playing-card__rank {
+  font-weight: 700;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.playing-card__suit,
+.playing-card__pip {
+  line-height: 1;
+}
+
+.playing-card__pip {
+  align-self: center;
+  justify-self: center;
+  font-size: 1.55rem;
+  margin-right: 0.1rem;
+}
+
+.playing-card--back {
+  background:
+    linear-gradient(135deg, rgba(83, 110, 92, 0.94), rgba(39, 61, 47, 0.98)),
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.08) 0, rgba(255, 255, 255, 0.08) 4px, transparent 4px, transparent 8px);
+  overflow: hidden;
+}
+
+.playing-card__backdrop {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background:
+    radial-gradient(circle at center, rgba(198, 221, 235, 0.22), transparent 46%),
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.18) 0, rgba(255, 255, 255, 0.18) 3px, transparent 3px, transparent 7px);
+}
+
+.is-heart,
+.is-diamond {
+  color: var(--heart);
+}
+
+.is-spade,
+.is-club {
+  color: var(--club);
+}
+
+@keyframes settle-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) rotate(-2deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) rotate(0);
+  }
+}

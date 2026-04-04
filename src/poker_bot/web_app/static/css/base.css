@@ -1,0 +1,107 @@
+:root {
+  --sage: #7d9a7d;
+  --moss: #476853;
+  --pine: #2f4838;
+  --leaf: #97ba91;
+  --cream: #f8f1e6;
+  --petal: #f2c9c2;
+  --sky: #c6ddeb;
+  --gold: #efcca5;
+  --ink: #213229;
+  --shadow: rgba(33, 50, 41, 0.18);
+  --shadow-strong: rgba(33, 50, 41, 0.28);
+  --surface: rgba(248, 241, 230, 0.78);
+  --surface-strong: rgba(255, 250, 244, 0.92);
+  --surface-soft: rgba(241, 232, 219, 0.7);
+  --edge: rgba(71, 104, 83, 0.16);
+  --heart: #cc5b6a;
+  --club: #2c6a55;
+  --button: linear-gradient(135deg, #769a7d, #3f6150);
+  --button-soft: linear-gradient(135deg, #f0dfbf, #e8b7b2);
+  --felt: radial-gradient(circle at top, rgba(201, 230, 208, 0.9), rgba(99, 139, 106, 0.96) 58%, rgba(53, 84, 65, 0.98));
+  --scroll-track: rgba(255, 255, 255, 0.34);
+  --scroll-thumb: rgba(71, 104, 83, 0.34);
+  --scroll-thumb-hover: rgba(71, 104, 83, 0.52);
+}
+
+* {
+  box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--scroll-track);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(125, 154, 125, 0.78), rgba(71, 104, 83, 0.92));
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(125, 154, 125, 0.92), rgba(71, 104, 83, 1));
+  background-clip: padding-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Trebuchet MS", "Gill Sans", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top right, rgba(242, 201, 194, 0.55), transparent 28%),
+    radial-gradient(circle at left center, rgba(198, 221, 235, 0.55), transparent 32%),
+    linear-gradient(180deg, #f5efdf, #eef2e8 48%, #e3ebdc);
+  position: relative;
+}
+
+body[data-page="table"] {
+  overflow: auto;
+}
+
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+body::before {
+  background:
+    radial-gradient(circle at 15% 15%, rgba(255, 255, 255, 0.72), transparent 18%),
+    radial-gradient(circle at 82% 22%, rgba(255, 246, 226, 0.55), transparent 14%),
+    radial-gradient(circle at 50% 100%, rgba(125, 154, 125, 0.18), transparent 24%);
+  opacity: 0.9;
+}
+
+body::after {
+  background-image:
+    linear-gradient(120deg, rgba(255, 255, 255, 0.14) 0, rgba(255, 255, 255, 0.14) 1px, transparent 1px, transparent 22px),
+    linear-gradient(30deg, rgba(71, 104, 83, 0.04) 0, rgba(71, 104, 83, 0.04) 1px, transparent 1px, transparent 18px);
+  opacity: 0.5;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}

@@ -82,7 +82,7 @@ def test_web_app_lobby_stream_and_html_shell() -> None:
     async def scenario() -> None:
         lobby_page = await app.handle_lobby_page(FakeRequest())
         assert lobby_page.status == 200
-        assert 'src="/static/lobby.js"' in lobby_page.text
+        assert 'src="/static/js/lobby.js"' in lobby_page.text
         assert 'id="app"' in lobby_page.text
 
         initial_lobby = app._lobby_snapshot()
@@ -300,14 +300,13 @@ def test_web_app_llm_table_can_complete_and_preserve_token_rejoin() -> None:
 
 
 def test_frontend_static_files_exist_and_include_core_hooks() -> None:
-    shared_path = Path("src/poker_bot/web_app/static/shared.js")
-    lobby_path = Path("src/poker_bot/web_app/static/lobby.js")
-    table_path = Path("src/poker_bot/web_app/static/table.js")
-    styles_path = Path("src/poker_bot/web_app/static/styles.css")
+    js_dir = Path("src/poker_bot/web_app/static/js")
+    css_dir = Path("src/poker_bot/web_app/static/css")
 
-    assert "export function renderCard" in shared_path.read_text()
-    assert "renderLobbyMarkup" in lobby_path.read_text()
-    assert "renderTableMarkup" in table_path.read_text()
-    styles = styles_path.read_text()
-    assert ".playing-card" in styles
-    assert "@media (max-width: 640px)" in styles
+    assert "export function renderCard" in (js_dir / "shared.js").read_text()
+    assert "renderLobbyMarkup" in (js_dir / "lobby.js").read_text()
+    assert "renderTableMarkup" in (js_dir / "table.js").read_text()
+    styles = (css_dir / "styles.css").read_text()
+    assert "@import" in styles
+    assert ".playing-card" in (css_dir / "cards.css").read_text()
+    assert "@media (max-width: 640px)" in (css_dir / "responsive.css").read_text()
