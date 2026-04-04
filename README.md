@@ -37,7 +37,7 @@ The committed template is `config/config.toml.example`. The real `config/config.
 Run the CLI table:
 
 ```bash
-PYTHONPATH=src python -m poker_bot --config config/config.toml cli --players cli,llm --max-hands 1
+PYTHONPATH=src python -m poker_bot --config config/config.toml cli --players Alice,bot,Bob --max-hands 1
 ```
 
 Run the Telegram bot:
@@ -50,9 +50,10 @@ PYTHONPATH=src python -m poker_bot --config config/config.toml telegram
 
 The `cli` entry point now requires the local table layout as explicit command-line arguments.
 
-- `--players` is a comma-separated seat list such as `cli,llm,cli`.
-- `cli` creates a terminal-controlled human seat.
-- `llm` creates an LLM-controlled seat using the shared `[llm]` section from the config file.
+- `--players` is a comma-separated seat list such as `Alice,bot,Bob`.
+- `bot` creates an LLM-controlled seat using the shared `[llm]` section from the config file.
+- Any other token, including `cli`, creates a terminal-controlled human seat and uses that token as the display name.
+- Human names must be unique within the table.
 - `--max-hands` controls how many hands the local run will play before exiting.
 
 This keeps `config/config.toml` focused on shared services and game defaults, while the CLI command itself explicitly describes the local table you want to run.

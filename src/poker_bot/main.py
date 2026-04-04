@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     cli_parser.add_argument(
         "--players",
         required=True,
-        help="Comma-separated player types in seat order, using only cli and llm.",
+        help="Comma-separated seat list in order: use 'bot' for an LLM seat, anything else as a human player name.",
     )
     cli_parser.add_argument(
         "--max-hands",
@@ -50,24 +50,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 async def run_cli_mode(config: ProjectConfig, *, players_spec: str, max_hands: int) -> None:
-    player_types = [item.strip().lower() for item in players_spec.split(",") if item.strip()]
-    if len(player_types) < 2:
+    player_entries = [item.strip() for item in players_spec.split(",") if item.strip()]
+    if len(player_entries) < 2:
         raise ValueError("CLI mode requires at least 2 players.")
-    if len(player_types) > config.game.max_players:
+    if len(player_entries) > config.game.max_players:
         raise ValueError("CLI player count cannot exceed game.max_players from the config file.")
 
     seats: list[SeatConfig] = []
     agents = {}
     llm_client: LLMGameClient | None = None
     llm_names = BotNameAllocator()
-    _validate_cli_players(player_types, config.llm)
-    logger.debug("Starting CLI mode with players=%s max_hands=%s", player_types, max_hands)
-    for index, player_type in enumerate(player_types, start=1):
+    _validate_cli_players(player_entries, config.llm)
+    logger.debug("Starting CLI mode with players=%s max_hands=%s", player_entries, max_hands)
+    for index, player_entry in enumerate(player_entries, start=1):
         seat_id = f"p{index}"
-        if player_type == "cli":
-            seats.append(SeatConfig(seat_id=seat_id, name=f"CLI {index}"))
-            agents[seat_id] = CLIPlayerAgent(seat_id)
-        elif player_type == "llm":
+        if player_entry.casefold() == "bot":
             seats.append(SeatConfig(seat_id=seat_id, name=llm_names.allocate()))
             if llm_client is None:
                 llm_client = LLMGameClient(
@@ -79,7 +76,8 @@ async def run_cli_mode(config: ProjectConfig, *, players_spec: str, max_hands: i
                 )
             agents[seat_id] = LLMPlayerAgent(seat_id, client=llm_client)
         else:
-            raise ValueError(f"Unsupported player type: {player_type}")
+            seats.append(SeatConfig(seat_id=seat_id, name=player_entry))
+            agents[seat_id] = CLIPlayerAgent(seat_id)
 
     engine = PokerEngine.create_table(
         TableConfig(
@@ -134,9 +132,23 @@ def main() -> None:
     parser.error(f"Unknown mode: {args.mode}")
 
 
-def _validate_cli_players(player_types: list[str], llm: LLMSettings) -> None:
-    unsupported = [player_type for player_type in player_types if player_type not in {"cli", "llm"}]
-    if unsupported:
-        raise ValueError(f"Unsupported CLI player types: {', '.join(sorted(set(unsupported)))}")
-    if "llm" in player_types and (llm.model is None or llm.api_key is None):
-        raise ValueError("llm.model and llm.api_key must be set in the config file when CLI uses llm seats.")
+def _validate_cli_players(player_entries: list[str], llm: LLMSettings) -> None:
+    human_name_keys: dict[str, str] = {}
+    duplicate_names: list[str] = []
+    has_bot = False
+
+    for player_entry in player_entries:
+        if player_entry.casefold() == "bot":
+            has_bot = True
+            continue
+        normalized_name = player_entry.casefold()
+        if normalized_name in human_name_keys:
+            duplicate_names.append(player_entry)
+            continue
+        human_name_keys[normalized_name] = player_entry
+
+    if duplicate_names:
+        duplicates = ", ".join(sorted(set(duplicate_names), key=str.casefold))
+        raise ValueError(f"Duplicate CLI user names are not allowed: {duplicates}")
+    if has_bot and (llm.model is None or llm.api_key is None):
+        raise ValueError("llm.model and llm.api_key must be set in the config file when CLI uses bot seats.")
