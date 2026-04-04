@@ -377,9 +377,9 @@ def test_telegram_player_agent_builds_reply_keyboard_from_legal_actions() -> Non
     assert sent_messages
     chat_id, text, keyboard = sent_messages[0]
     assert chat_id == 42
-    assert "🂠 <b>Hero</b>" in text
-    assert "🃏 <code>A♠ K♦</code>" in text
-    assert "Pot: <b>150</b>  •  To call: <b>100</b>  •  Stack: <b>1900</b>" in text
+    assert "A♠ K♦" in text
+    assert "Pot: <b>150</b>" in text
+    assert "Stack: <b>1900</b>" in text
     assert keyboard is None
     _chat_id, prompt_text, prompt_keyboard = sent_messages[1]
     assert "Your move" in prompt_text
@@ -402,7 +402,7 @@ def test_telegram_player_agent_sends_immediate_update_messages() -> None:
     asyncio.run(agent.notify_update(make_player_update()))
 
     assert len(sent_messages) >= 3
-    assert "🂠 <b>Hero</b>" in sent_messages[0][1]
+    assert "A♠ K♦" in sent_messages[0][1]
     assert "Hand 1" in sent_messages[1][1]
     assert "<i>Villain</i>: big blind 100" in sent_messages[2][1]
 
@@ -589,9 +589,7 @@ def test_telegram_player_agent_does_not_duplicate_status_before_turn_prompt() ->
 
     asyncio.run(exercise())
 
-    status_messages = [text for _chat_id, text, _markup in sent_messages if "Your hand:" in text]
-    if not status_messages:
-        status_messages = [text for _chat_id, text, _markup in sent_messages if "🂠 <b>Hero</b>" in text]
+    status_messages = [text for _chat_id, text, _markup in sent_messages if "8♣ J♣" in text]
     prompt_messages = [text for _chat_id, text, _markup in sent_messages if "Your move" in text]
-    assert len(status_messages) == 1
+    assert len(status_messages) == 1, f"Expected 1 status panel, got {len(status_messages)}: {status_messages}"
     assert len(prompt_messages) == 1

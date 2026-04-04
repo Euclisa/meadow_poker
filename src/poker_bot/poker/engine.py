@@ -216,6 +216,7 @@ class PokerEngine:
                 code="deck_exhausted",
                 message="The hand deck ran out of cards before the hand could start",
                 reason="deck_exhausted",
+                refund_chips=True,
             )
 
         events: list[GameEvent] = [
@@ -355,6 +356,7 @@ class PokerEngine:
                 message="The hand deck ran out of cards before the hand could finish",
                 reason="deck_exhausted",
                 events=events,
+                refund_chips=True,
             )
         if self._phase in {GamePhase.PREFLOP, GamePhase.FLOP, GamePhase.TURN, GamePhase.RIVER}:
             if previous_bet != self._current_bet:
@@ -642,10 +644,13 @@ class PokerEngine:
         message: str,
         reason: str,
         events: list[GameEvent] | None = None,
+        refund_chips: bool = False,
     ) -> ActionResult:
         self._phase = GamePhase.TABLE_COMPLETE
         self._acting_index = None
         result_events = list(events or [])
+        if refund_chips:
+            self._refund_committed_chips(result_events)
         result_events.append(
             GameEvent(
                 "table_completed",
@@ -658,6 +663,22 @@ class PokerEngine:
             events=tuple(result_events),
             state_changed=True,
         )
+
+    def _refund_committed_chips(self, events: list[GameEvent]) -> None:
+        for seat in self._seats:
+            if seat.committed_this_hand > 0:
+                refund = seat.committed_this_hand
+                seat.stack += refund
+                seat.committed_this_hand = 0
+                seat.committed_this_street = 0
+                if seat.all_in and seat.stack > 0:
+                    seat.all_in = False
+                events.append(
+                    GameEvent(
+                        "chips_refunded",
+                        {"seat_id": seat.seat_id, "amount": refund},
+                    )
+                )
 
     def _next_action_index_from(self, index: int | None) -> int | None:
         if index is None:

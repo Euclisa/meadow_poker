@@ -278,17 +278,19 @@ def test_scenario_mid_hand_deck_exhaustion_completes_table_cleanly() -> None:
             "p1": (PlayerAction(ActionType.RAISE, amount=200),),
             "p2": (PlayerAction(ActionType.CALL),),
         },
-        expected_stacks={"p1": 0, "p2": 1_800},
-        expected_event_types=("table_completed",),
+        expected_stacks={"p1": 200, "p2": 2_000},
+        expected_event_types=("table_completed", "chips_refunded"),
     )
 
     orchestrator, agents = run_scenario(scenario, max_hands=1)
 
     final_stacks = {seat.seat_id: seat.stack for seat in orchestrator.engine.get_public_table_view().seats}
     table_completed = [event for event in orchestrator.event_log if event.event_type == "table_completed"]
+    refunds = [event for event in orchestrator.event_log if event.event_type == "chips_refunded"]
     assert final_stacks == scenario.expected_stacks
     assert orchestrator.engine.get_phase().value == "table_complete"
     assert table_completed[-1].payload["reason"] == "deck_exhausted"
+    assert len(refunds) == 2
     assert len(agents["p1"].decisions) == 1
     assert len(agents["p2"].decisions) == 1
 
