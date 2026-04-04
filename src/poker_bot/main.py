@@ -39,9 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     cli_parser.add_argument(
         "--max-hands",
-        required=True,
         type=int,
-        help="Number of hands to run before the CLI session exits.",
+        default=None,
+        help="Maximum hands to play. Omit for unlimited (plays until one player remains).",
     )
 
     subparsers.add_parser("telegram", help="Run the Telegram bot")

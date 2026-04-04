@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Callable
 
 from poker_bot.players.base import PlayerAgent
-from poker_bot.players.rendering import render_cli_status, render_cli_events, render_cli_turn_prompt
-from poker_bot.types import ActionType, DecisionRequest, LegalAction, PlayerAction, PlayerUpdate
+from poker_bot.players.rendering import render_cli_status, render_cli_events, render_cli_standings, render_cli_turn_prompt
+from poker_bot.types import ActionType, DecisionRequest, LegalAction, PlayerAction, PlayerUpdate, PlayerUpdateType
 
 _ACTION_SHORTCUTS: dict[str, str] = {
     "f": "fold",
@@ -52,6 +52,8 @@ class CLIPlayerAgent(PlayerAgent):
         event_lines = render_cli_events(update)
         if event_lines:
             self._output(event_lines)
+        if update.update_type == PlayerUpdateType.TABLE_COMPLETED:
+            self._output(render_cli_standings(update.public_table_view))
 
     async def close(self) -> None:
         return None

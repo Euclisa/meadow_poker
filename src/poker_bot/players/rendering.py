@@ -10,6 +10,7 @@ from poker_bot.types import (
     PlayerUpdate,
     PlayerUpdateType,
     PlayerView,
+    PublicTableView,
 )
 
 
@@ -163,6 +164,16 @@ def render_cli_events(update: PlayerUpdate) -> str:
         rendered = _render_cli_event(event, seat_names=seat_names)
         if rendered is not None:
             lines.append(rendered)
+    return "\n".join(lines)
+
+
+def render_cli_standings(view: PublicTableView) -> str:
+    ranked = sorted(view.seats, key=lambda s: s.stack, reverse=True)
+    lines = [f"\n{_SEPARATOR}", "  Final standings", _SEPARATOR]
+    for place, seat in enumerate(ranked, start=1):
+        marker = "  *" if seat.stack > 0 else "   "
+        lines.append(f"{marker} {place}. {seat.name:<20} {seat.stack:>6}")
+    lines.append(_SEPARATOR)
     return "\n".join(lines)
 
 

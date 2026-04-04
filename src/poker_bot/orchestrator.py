@@ -48,6 +48,11 @@ class GameOrchestrator:
                 await self._run_current_hand()
                 hands_played += 1
                 if max_hands is not None and hands_played >= max_hands:
+                    logger.info("Max hands reached (%s), ending table", max_hands)
+                    if self.engine.get_phase() != GamePhase.TABLE_COMPLETE:
+                        self._append_events((
+                            GameEvent("table_completed", {"reason": "max_hands_reached", "hand_number": hands_played}),
+                        ))
                     break
         finally:
             await self._deliver_updates(force_table_completed=True)

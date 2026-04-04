@@ -476,6 +476,29 @@ def test_cli_status_shows_unicode_cards_and_state() -> None:
     assert "[f]old" in rendered
 
 
+def test_cli_shows_final_standings_on_table_completed() -> None:
+    decision = make_decision_request()
+    update = PlayerUpdate(
+        update_type=PlayerUpdateType.TABLE_COMPLETED,
+        events=(
+            GameEvent("table_completed", {"reason": "not_enough_players", "hand_number": 5}),
+        ),
+        public_table_view=decision.public_table_view,
+        player_view=decision.player_view,
+        acting_seat_id=None,
+        is_your_turn=False,
+    )
+    outputs: list[str] = []
+    agent = CLIPlayerAgent("p1", output_func=outputs.append)
+
+    asyncio.run(agent.notify_update(update))
+
+    rendered = "\n".join(outputs)
+    assert "Final standings" in rendered
+    assert "Hero" in rendered
+    assert "Villain" in rendered
+
+
 def test_telegram_player_agent_builds_reply_keyboard_from_legal_actions() -> None:
     decision = make_decision_request()
     sent_messages: list[tuple[int, str, object | None]] = []

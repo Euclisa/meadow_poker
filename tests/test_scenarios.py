@@ -435,3 +435,52 @@ def test_scenario_same_pair_showdown_uses_kicker_tiebreak() -> None:
     pot_awards = [event.payload for event in orchestrator.event_log if event.event_type == "pot_awarded"]
     assert final_stacks == scenario.expected_stacks
     assert pot_awards == [{"seat_id": "p1", "amount": 200}]
+
+
+def test_scenario_unlimited_hands_plays_until_last_player_standing() -> None:
+    # Hand 1: p1 is dealer/SB(50), p2 is BB(100). p1 folds. Stacks: 50, 2050.
+    # Hand 2: p2 is dealer/SB(50), p1 is BB(50 all-in). Auto-runout. p2 wins.
+    #         Stacks: 0, 2100.
+    # Hand 3 attempt: only p2 funded -> table_complete.
+    scenario = Scenario(
+        name="last_player_standing",
+        hands=(
+            ("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"),
+            ("2h", "As", "7d", "Ad", "Kc", "Qc", "9c", "3s", "4s"),
+        ),
+        stacks=(100, 2_000),
+        scripted_actions={
+            "p1": (PlayerAction(ActionType.FOLD),),
+        },
+        expected_stacks={"p1": 0, "p2": 2_100},
+        expected_event_types=("table_completed",),
+    )
+
+    orchestrator, _agents = run_scenario(scenario, max_hands=None)
+
+    final_stacks = {seat.seat_id: seat.stack for seat in orchestrator.engine.get_public_table_view().seats}
+    funded = [sid for sid, stack in final_stacks.items() if stack > 0]
+    table_completed = [e for e in orchestrator.event_log if e.event_type == "table_completed"]
+    assert final_stacks == scenario.expected_stacks
+    assert len(funded) == 1
+    assert table_completed[-1].payload["reason"] == "not_enough_players"
+
+
+def test_scenario_max_hands_emits_table_completed_event() -> None:
+    scenario = Scenario(
+        name="max_hands_event",
+        hands=(
+            ("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"),
+        ),
+        stacks=(2_000, 2_000),
+        scripted_actions={"p1": (PlayerAction(ActionType.FOLD),)},
+        expected_stacks={"p1": 1_950, "p2": 2_050},
+        expected_event_types=("table_completed",),
+    )
+
+    orchestrator, _agents = run_scenario(scenario, max_hands=1)
+
+    event_types = [e.event_type for e in orchestrator.event_log]
+    table_completed = [e for e in orchestrator.event_log if e.event_type == "table_completed"]
+    assert "table_completed" in event_types
+    assert table_completed[-1].payload["reason"] == "max_hands_reached"
