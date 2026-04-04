@@ -158,8 +158,11 @@ class TelegramApp:
 
         await self._notify_waiting_table(
             session,
-            f"{display_name} joined table {session.table_id}. "
-            f"Telegram seats: {len(session.claimed_telegram_users)}/{session.telegram_seat_count}.",
+            self._format_waiting_table_update(
+                session,
+                f"{display_name} joined table {session.table_id}.",
+            ),
+            emphasize_start=session.is_full(),
         )
 
     async def handle_my_table_command(self, *, user_id: int, chat_id: int) -> None:
@@ -188,7 +191,7 @@ class TelegramApp:
         await self._start_table(session)
         await self._notify_waiting_table(
             session,
-            f"Table {session.table_id} started with {session.total_seats} seats.",
+            self._format_started_table_message(session),
         )
 
     async def handle_leave_table_command(self, *, user_id: int, chat_id: int) -> None:
@@ -212,8 +215,10 @@ class TelegramApp:
         self.registry.leave_waiting_table(user_id)
         await self._notify_waiting_table(
             session,
-            f"{display_name} left table {session.table_id}. "
-            f"Telegram seats: {len(session.claimed_telegram_users)}/{session.telegram_seat_count}.",
+            self._format_waiting_table_update(
+                session,
+                f"{display_name} left table {session.table_id}.",
+            ),
         )
 
     async def handle_cancel_table_command(self, *, user_id: int, chat_id: int) -> None:
@@ -389,7 +394,11 @@ class TelegramApp:
         finally:
             self._create_flows.pop(user_id, None)
 
-        await self._send_message(chat_id, self._format_created_table(session), self._build_lobby_keyboard(user_id))
+        await self._send_message(
+            chat_id,
+            self._format_created_table(session),
+            self._build_lobby_keyboard(user_id, emphasize_start=session.is_full()),
+        )
 
     async def _start_table(self, session: TelegramTableSession) -> None:
         logger.info(
@@ -446,9 +455,19 @@ class TelegramApp:
             self.registry.mark_completed(session)
             await self._notify_waiting_table(session, f"Table {session.table_id} has completed.")
 
-    async def _notify_waiting_table(self, session: TelegramTableSession, text: str) -> None:
+    async def _notify_waiting_table(
+        self,
+        session: TelegramTableSession,
+        text: str,
+        *,
+        emphasize_start: bool = False,
+    ) -> None:
         for user in session.human_users():
-            await self._send_message(user.chat_id, text, self._build_lobby_keyboard(user.user_id))
+            await self._send_message(
+                user.chat_id,
+                text,
+                self._build_lobby_keyboard(user.user_id, emphasize_start=emphasize_start),
+            )
 
     async def _send_message(self, chat_id: int, text: str, reply_markup: Any | None = None) -> None:
         if self._send_message_callback is not None:
@@ -480,11 +499,33 @@ class TelegramApp:
             f"Total seats: {session.total_seats}",
             f"Telegram seats: {session.telegram_seat_count}",
             f"LLM seats: {session.llm_seat_count}",
-            f"Join with: /join {session.table_id}",
         ]
-        if self.config.bot_username:
+        if session.has_multiple_human_players:
+            lines.append(f"Join with: /join {session.table_id}")
+        if session.has_multiple_human_players and self.config.bot_username:
             lines.append(f"Deep link: https://t.me/{self.config.bot_username}?start=join_{session.table_id}")
+        if session.is_full():
+            lines.append(self._format_ready_to_start_hint(session))
         return "\n".join(lines)
+
+    def _format_waiting_table_update(self, session: TelegramTableSession, headline: str) -> str:
+        lines = [
+            headline,
+            f"Telegram seats: {session.human_player_count}/{session.telegram_seat_count}.",
+        ]
+        if session.is_full():
+            lines.append(self._format_ready_to_start_hint(session))
+        return "\n".join(lines)
+
+    def _format_ready_to_start_hint(self, session: TelegramTableSession) -> str:
+        if session.has_multiple_human_players:
+            return f"Table {session.table_id} is ready to start. The creator can press Start Game."
+        return f"Table {session.table_id} is ready to start. Press Start Game to begin."
+
+    def _format_started_table_message(self, session: TelegramTableSession) -> str:
+        if session.has_multiple_human_players:
+            return f"Table {session.table_id} started with {session.total_seats} seats."
+        return f"Table {session.table_id} started with {session.total_seats} seats after the creator pressed Start Game."
 
     def _format_status(self, session: TelegramTableSession) -> str:
         status = session.status_view()
@@ -537,13 +578,16 @@ class TelegramApp:
     async def _handle_help_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
         await self.handle_help_command(chat_id=chat_id)
 
-    def _build_lobby_keyboard(self, user_id: int | None = None) -> Any | None:
+    def _build_lobby_keyboard(self, user_id: int | None = None, *, emphasize_start: bool = False) -> Any | None:
         session = self.registry.get_user_table(user_id) if user_id is not None else None
         if session is None:
             labels = [["Create Table"], ["Help"]]
         elif session.status == TelegramTableState.WAITING:
             if session.creator_user_id == user_id:
-                labels = [["My Table"], ["Start Game"], ["Cancel Table"], ["Help"]]
+                if emphasize_start and session.is_full():
+                    labels = [["Start Game"], ["My Table"], ["Cancel Table"], ["Help"]]
+                else:
+                    labels = [["My Table"], ["Start Game"], ["Cancel Table"], ["Help"]]
             else:
                 labels = [["My Table"], ["Leave Table"], ["Help"]]
         elif session.status == TelegramTableState.RUNNING:

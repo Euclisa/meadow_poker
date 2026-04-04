@@ -83,6 +83,43 @@ def test_create_table_guided_flow_and_creator_autojoin() -> None:
     assert any(markup == [["My Table"], ["Start Game"], ["Cancel Table"], ["Help"]] for _chat, _text, markup in messages)
 
 
+def test_single_human_table_hides_join_info_and_announces_ready_to_start() -> None:
+    app, messages = make_app()
+
+    async def scenario() -> None:
+        await app.handle_create_table_command(user_id=1, chat_id=101)
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="1")
+
+    asyncio.run(scenario())
+
+    created_messages = [item for item in messages if "Created table" in item[1]]
+    assert created_messages
+    _chat_id, text, markup = created_messages[-1]
+    assert "Join with:" not in text
+    assert "Deep link:" not in text
+    assert "ready to start" in text
+    assert "Press Start Game to begin." in text
+    assert markup == [["Start Game"], ["My Table"], ["Cancel Table"], ["Help"]]
+
+
+def test_multi_human_table_keeps_join_info_on_creation() -> None:
+    app, messages = make_app()
+
+    async def scenario() -> None:
+        await app.handle_create_table_command(user_id=1, chat_id=101)
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="3")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="1")
+
+    asyncio.run(scenario())
+
+    created_messages = [item for item in messages if "Created table" in item[1]]
+    assert created_messages
+    _chat_id, text, _markup = created_messages[-1]
+    assert "Join with:" in text
+    assert "Deep link:" in text
+
+
 def test_join_and_start_require_creator_and_full_human_seats() -> None:
     app, messages = make_app(max_hands=1)
 
@@ -110,6 +147,27 @@ def test_join_and_start_require_creator_and_full_human_seats() -> None:
     table = next(iter(app.registry._tables.values()))
     assert table is not None
     assert table.status == TelegramTableState.COMPLETED
+
+
+def test_ready_table_notification_emphasizes_start_button_for_creator() -> None:
+    app, messages = make_app()
+
+    async def scenario() -> None:
+        await app.handle_create_table_command(user_id=1, chat_id=101)
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        table = app.registry.get_user_table(1)
+        assert table is not None
+        await app.handle_join_command(user_id=2, chat_id=202, display_name="Bob", table_id=table.table_id)
+
+    asyncio.run(scenario())
+
+    creator_messages = [(text, markup) for chat_id, text, markup in messages if chat_id == 101]
+    assert any("ready to start" in text for text, _markup in creator_messages)
+    assert any(markup == [["Start Game"], ["My Table"], ["Cancel Table"], ["Help"]] for _text, markup in creator_messages)
+    joiner_messages = [(text, markup) for chat_id, text, markup in messages if chat_id == 202]
+    assert any("ready to start" in text for text, _markup in joiner_messages)
+    assert any(markup == [["My Table"], ["Leave Table"], ["Help"]] for _text, markup in joiner_messages)
 
 
 def test_creator_leaving_waiting_table_cancels_it() -> None:

@@ -39,8 +39,16 @@ class TelegramTableSession:
     def telegram_seat_count(self) -> int:
         return self.request.telegram_seat_count
 
+    @property
+    def human_player_count(self) -> int:
+        return len(self.claimed_telegram_users)
+
+    @property
+    def has_multiple_human_players(self) -> bool:
+        return self.telegram_seat_count > 1
+
     def is_full(self) -> bool:
-        return len(self.claimed_telegram_users) >= self.telegram_seat_count
+        return self.human_player_count >= self.telegram_seat_count
 
     def has_user(self, user_id: int) -> bool:
         return any(user.user_id == user_id for user in self.claimed_telegram_users)
