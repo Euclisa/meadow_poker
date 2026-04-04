@@ -52,10 +52,17 @@ class TelegramPlayerAgent(PlayerAgent):
         )
         self._pending_future = asyncio.get_running_loop().create_future()
 
+        seat_names = self._seat_names(decision)
         text_parts = []
         if decision.recent_events:
-            text_parts.append(render_events(decision.recent_events))
-        text_parts.append(render_decision_summary(decision))
+            text_parts.append(render_events(decision.recent_events, seat_names=seat_names))
+        text_parts.append(
+            render_decision_summary(
+                decision,
+                show_seat_id=False,
+                show_legal_actions=False,
+            )
+        )
         logger.debug("Telegram pending action created seat_id=%s user_id=%s decision=%s", self.seat_id, self.user_id, decision)
         await self._dispatch_message("\n\n".join(text_parts), self._build_keyboard(decision))
         try:
@@ -64,23 +71,30 @@ class TelegramPlayerAgent(PlayerAgent):
             self._pending_future = None
             self._pending_state = None
 
-    async def submit_button_action(self, *, user_id: int, chat_id: int, action_name: str) -> bool:
+    async def submit_text_action(self, *, user_id: int, chat_id: int, text: str) -> bool:
         if not self.matches_user(user_id=user_id, chat_id=chat_id):
-            logger.debug("Telegram button ignored seat_id=%s wrong user/chat user_id=%s chat_id=%s", self.seat_id, user_id, chat_id)
+            logger.debug("Telegram text action ignored seat_id=%s wrong user/chat user_id=%s chat_id=%s", self.seat_id, user_id, chat_id)
             return False
         if self._pending_state is None or self._pending_future is None or self._pending_future.done():
-            logger.debug("Telegram button ignored seat_id=%s no pending state action_name=%s", self.seat_id, action_name)
+            logger.debug("Telegram text action ignored seat_id=%s no pending state text=%s", self.seat_id, text)
+            return False
+        if self._pending_state.awaiting_amount:
+            return await self.submit_amount(user_id=user_id, chat_id=chat_id, amount_text=text)
+
+        action_name = self._normalize_action_text(text)
+        if action_name is None:
+            logger.debug("Telegram text action ignored seat_id=%s unrecognized text=%s", self.seat_id, text)
             return False
         try:
             action_type = ActionType(action_name)
         except ValueError:
-            logger.debug("Telegram button ignored seat_id=%s invalid action_name=%s", self.seat_id, action_name)
+            logger.debug("Telegram text action ignored seat_id=%s invalid action_name=%s", self.seat_id, action_name)
             return False
 
         legal_action = self._find_legal_action(action_type)
         if legal_action is None:
-            logger.debug("Telegram illegal button seat_id=%s action_type=%s", self.seat_id, action_type)
-            await self._dispatch_message("That action is not legal right now.", None)
+            logger.debug("Telegram illegal text action seat_id=%s action_type=%s", self.seat_id, action_type)
+            await self._dispatch_message("That action is not legal right now.", self._build_keyboard(self._pending_state.decision_request))
             return True
 
         if action_type in {ActionType.BET, ActionType.RAISE}:
@@ -97,6 +111,9 @@ class TelegramPlayerAgent(PlayerAgent):
         logger.debug("Telegram action resolved seat_id=%s action_type=%s", self.seat_id, action_type)
         self._pending_future.set_result(PlayerAction(action_type=action_type))
         return True
+
+    async def submit_button_action(self, *, user_id: int, chat_id: int, action_name: str) -> bool:
+        return await self.submit_text_action(user_id=user_id, chat_id=chat_id, text=action_name)
 
     async def submit_amount(self, *, user_id: int, chat_id: int, amount_text: str) -> bool:
         if not self.matches_user(user_id=user_id, chat_id=chat_id):
@@ -159,7 +176,7 @@ class TelegramPlayerAgent(PlayerAgent):
         events: tuple[GameEvent, ...],
         view: PlayerView | PublicTableView,
     ) -> None:
-        await self._dispatch_message(render_events(events), None)
+        await self._dispatch_message(render_events(events, seat_names=self._seat_names_from_view(view)), None)
 
     async def close(self) -> None:
         await self.cancel_pending_action("agent_closed")
@@ -187,7 +204,7 @@ class TelegramPlayerAgent(PlayerAgent):
         if self._bot is None:
             return [self._button_label(item.action_type, item.min_amount, item.max_amount) for item in decision.legal_actions]
         try:
-            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+            from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise RuntimeError(
                 "The aiogram package is required when TelegramPlayerAgent is used with a bot instance."
@@ -196,15 +213,17 @@ class TelegramPlayerAgent(PlayerAgent):
         keyboard = []
         for action in decision.legal_actions:
             label = self._button_label(action.action_type, action.min_amount, action.max_amount)
-            keyboard.append(
-                [
-                    InlineKeyboardButton(
-                        text=label,
-                        callback_data=f"poker:action:{self.seat_id}:{action.action_type.value}",
-                    )
-                ]
-            )
-        return InlineKeyboardMarkup(inline_keyboard=keyboard)
+            keyboard.append([KeyboardButton(text=label)])
+        return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+    @staticmethod
+    def _seat_names(decision: DecisionRequest) -> dict[str, str]:
+        return {seat.seat_id: seat.name for seat in decision.public_table_view.seats}
+
+    @staticmethod
+    def _seat_names_from_view(view: PlayerView | PublicTableView) -> dict[str, str]:
+        public_table = view.public_table if isinstance(view, PlayerView) else view
+        return {seat.seat_id: seat.name for seat in public_table.seats}
 
     @staticmethod
     def _button_label(action_type: ActionType, min_amount: int | None, max_amount: int | None) -> str:
@@ -213,3 +232,10 @@ class TelegramPlayerAgent(PlayerAgent):
         if min_amount == max_amount:
             return f"{action_type.value.title()} {min_amount}"
         return f"{action_type.value.title()} {min_amount}-{max_amount}"
+
+    @staticmethod
+    def _normalize_action_text(text: str) -> str | None:
+        normalized = text.strip().lower()
+        if not normalized:
+            return None
+        return normalized.split()[0]

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
+from poker_bot.naming import BotNameAllocator
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
 from poker_bot.players.telegram import TelegramPlayerAgent
@@ -48,22 +49,8 @@ class TelegramActionRouter:
         self._registry = registry
 
     async def route_callback(self, *, user_id: int, chat_id: int, data: str) -> bool:
-        logger.debug("Telegram callback received user_id=%s chat_id=%s data=%s", user_id, chat_id, data)
-        session = self._registry.get_user_table(user_id)
-        if session is None or session.status != TelegramTableState.RUNNING:
-            return False
-        parsed = self._parse_callback_data(data)
-        if parsed is None:
-            return False
-        seat_id, action_name = parsed
-        agent = session.player_agents.get(seat_id)
-        if not isinstance(agent, TelegramPlayerAgent):
-            return False
-        return await agent.submit_button_action(
-            user_id=user_id,
-            chat_id=chat_id,
-            action_name=action_name,
-        )
+        logger.debug("Telegram callback ignored after reply-keyboard migration user_id=%s chat_id=%s data=%s", user_id, chat_id, data)
+        return False
 
     async def route_text(self, *, user_id: int, chat_id: int, text: str) -> bool:
         logger.debug("Telegram text routed user_id=%s chat_id=%s text=%s", user_id, chat_id, text)
@@ -72,15 +59,8 @@ class TelegramActionRouter:
             return False
         for agent in session.player_agents.values():
             if isinstance(agent, TelegramPlayerAgent) and agent.matches_user(user_id=user_id, chat_id=chat_id):
-                return await agent.submit_amount(user_id=user_id, chat_id=chat_id, amount_text=text)
+                return await agent.submit_text_action(user_id=user_id, chat_id=chat_id, text=text)
         return False
-
-    @staticmethod
-    def _parse_callback_data(data: str) -> tuple[str, str] | None:
-        parts = data.split(":")
-        if len(parts) != 4 or parts[:2] != ["poker", "action"]:
-            return None
-        return parts[2], parts[3]
 
 
 class TelegramApp:
@@ -90,6 +70,7 @@ class TelegramApp:
         *,
         send_message: Any | None = None,
         llm_client_factory: Any | None = None,
+        llm_name_allocator: BotNameAllocator | None = None,
         bot: Any | None = None,
         registry: TelegramTableRegistry | None = None,
     ) -> None:
@@ -98,6 +79,7 @@ class TelegramApp:
         self._bot = bot
         self._send_message_callback = send_message
         self._llm_client_factory = llm_client_factory or self._default_llm_client_factory
+        self._llm_name_allocator = llm_name_allocator
         self._create_flows: dict[int, _CreateTableFlowState] = {}
         self.action_router = TelegramActionRouter(self.registry)
 
@@ -121,6 +103,7 @@ class TelegramApp:
         await self._send_message(
             chat_id,
             "Welcome to Poker Bot.\nUse /create_table to start a table or /join <table_id> to join one.",
+            self._build_lobby_keyboard(user_id),
         )
 
     async def handle_help_command(self, *, chat_id: int) -> None:
@@ -138,6 +121,7 @@ class TelegramApp:
                     "/help - show this help",
                 ]
             ),
+            self._build_lobby_keyboard(),
         )
 
     async def handle_create_table_command(self, *, user_id: int, chat_id: int) -> None:
@@ -146,7 +130,7 @@ class TelegramApp:
             await self._send_message(chat_id, "You are already assigned to a table.")
             return
         self._create_flows[user_id] = _CreateTableFlowState(chat_id=chat_id)
-        await self._send_message(chat_id, "Enter total number of players for the table (2-6).")
+        await self._send_message(chat_id, "Enter total number of players for the table (2-6).", self._build_create_flow_keyboard())
 
     async def handle_join_command(
         self,
@@ -165,10 +149,10 @@ class TelegramApp:
                 display_name=display_name,
             )
         except KeyError:
-            await self._send_message(chat_id, "Table not found.")
+            await self._send_message(chat_id, "Table not found.", self._build_lobby_keyboard(user_id))
             return
         except ValueError as exc:
-            await self._send_message(chat_id, str(exc))
+            await self._send_message(chat_id, str(exc), self._build_lobby_keyboard(user_id))
             return
 
         await self._notify_waiting_table(
@@ -182,22 +166,22 @@ class TelegramApp:
         if session is None:
             await self._send_message(chat_id, "You are not assigned to any table.")
             return
-        await self._send_message(chat_id, self._format_status(session))
+        await self._send_message(chat_id, self._format_status(session), self._build_lobby_keyboard(user_id))
 
     async def handle_start_game_command(self, *, user_id: int, chat_id: int) -> None:
         logger.debug("Handling /start_game user_id=%s chat_id=%s", user_id, chat_id)
         session = self.registry.get_user_table(user_id)
         if session is None:
-            await self._send_message(chat_id, "You are not assigned to any table.")
+            await self._send_message(chat_id, "You are not assigned to any table.", self._build_lobby_keyboard(user_id))
             return
         if session.creator_user_id != user_id:
-            await self._send_message(chat_id, "Only the creator can start the table.")
+            await self._send_message(chat_id, "Only the creator can start the table.", self._build_lobby_keyboard(user_id))
             return
         if session.status != TelegramTableState.WAITING:
-            await self._send_message(chat_id, "Only waiting tables can be started.")
+            await self._send_message(chat_id, "Only waiting tables can be started.", self._build_lobby_keyboard(user_id))
             return
         if not session.is_full():
-            await self._send_message(chat_id, "All Telegram seats must be claimed before starting.")
+            await self._send_message(chat_id, "All Telegram seats must be claimed before starting.", self._build_lobby_keyboard(user_id))
             return
 
         await self._start_table(session)
@@ -210,10 +194,10 @@ class TelegramApp:
         logger.debug("Handling /leave_table user_id=%s chat_id=%s", user_id, chat_id)
         session = self.registry.get_user_table(user_id)
         if session is None:
-            await self._send_message(chat_id, "You are not assigned to any table.")
+            await self._send_message(chat_id, "You are not assigned to any table.", self._build_lobby_keyboard(user_id))
             return
         if session.status == TelegramTableState.RUNNING:
-            await self._send_message(chat_id, "Leaving a running table is not supported in v1.")
+            await self._send_message(chat_id, "Leaving a running table is not supported in v1.", self._build_lobby_keyboard(user_id))
             return
         if session.creator_user_id == user_id:
             cancelled = self.registry.cancel_table(session.table_id)
@@ -231,13 +215,13 @@ class TelegramApp:
         logger.debug("Handling /cancel_table user_id=%s chat_id=%s", user_id, chat_id)
         session = self.registry.get_user_table(user_id)
         if session is None:
-            await self._send_message(chat_id, "You are not assigned to any table.")
+            await self._send_message(chat_id, "You are not assigned to any table.", self._build_lobby_keyboard(user_id))
             return
         if session.creator_user_id != user_id:
-            await self._send_message(chat_id, "Only the creator can cancel the table.")
+            await self._send_message(chat_id, "Only the creator can cancel the table.", self._build_lobby_keyboard(user_id))
             return
         if session.status != TelegramTableState.WAITING:
-            await self._send_message(chat_id, "Only waiting tables can be cancelled.")
+            await self._send_message(chat_id, "Only waiting tables can be cancelled.", self._build_lobby_keyboard(user_id))
             return
         cancelled = self.registry.cancel_table(session.table_id)
         await self._notify_waiting_table(cancelled, f"Table {cancelled.table_id} was cancelled.")
@@ -254,6 +238,10 @@ class TelegramApp:
         text: str,
     ) -> None:
         logger.debug("Handling Telegram text user_id=%s chat_id=%s text=%s", user_id, chat_id, text)
+        command = self._match_lobby_command(text)
+        if command is not None and user_id not in self._create_flows:
+            await command(user_id=user_id, chat_id=chat_id, display_name=display_name)
+            return
         if user_id in self._create_flows:
             await self._handle_create_flow_step(
                 user_id=user_id,
@@ -267,7 +255,7 @@ class TelegramApp:
         if consumed:
             return
 
-        await self._send_message(chat_id, "Unrecognized input. Use /help for commands.")
+        await self._send_message(chat_id, "Unrecognized input. Use /help for commands.", self._build_lobby_keyboard(user_id))
 
     async def run_polling(self) -> None:
         if self.config.bot_token is None:
@@ -275,7 +263,7 @@ class TelegramApp:
         try:
             from aiogram import Bot, Dispatcher, F, Router
             from aiogram.filters import Command
-            from aiogram.types import CallbackQuery, Message
+            from aiogram.types import Message
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise RuntimeError(
                 "The aiogram package is required for Telegram mode. Install poker-bot[telegram]."
@@ -337,18 +325,6 @@ class TelegramApp:
         async def on_cancel_table(message: Message) -> None:
             await self.handle_cancel_table_command(user_id=message.from_user.id, chat_id=message.chat.id)
 
-        @router.callback_query()
-        async def on_callback(callback: CallbackQuery) -> None:
-            if callback.data is None:
-                return
-            handled = await self.handle_callback_query(
-                user_id=callback.from_user.id,
-                chat_id=callback.message.chat.id,
-                data=callback.data,
-            )
-            if handled:
-                await callback.answer()
-
         @router.message(F.text)
         async def on_text(message: Message) -> None:
             if message.text and message.text.startswith("/"):
@@ -375,16 +351,16 @@ class TelegramApp:
         if flow.total_seats is None:
             total_seats = self._parse_int(text)
             if total_seats is None or not 2 <= total_seats <= self.config.max_players:
-                await self._send_message(chat_id, f"Enter a valid player count between 2 and {self.config.max_players}.")
+                await self._send_message(chat_id, f"Enter a valid player count between 2 and {self.config.max_players}.", self._build_create_flow_keyboard())
                 return
             flow.total_seats = total_seats
-            await self._send_message(chat_id, f"Enter number of LLM seats (0-{total_seats - 1}).")
+            await self._send_message(chat_id, f"Enter number of LLM seats (0-{total_seats - 1}).", self._build_create_flow_keyboard())
             return
 
         llm_seats = self._parse_int(text)
         assert flow.total_seats is not None
         if llm_seats is None or not 0 <= llm_seats < flow.total_seats:
-            await self._send_message(chat_id, f"Enter a valid LLM seat count between 0 and {flow.total_seats - 1}.")
+            await self._send_message(chat_id, f"Enter a valid LLM seat count between 0 and {flow.total_seats - 1}.", self._build_create_flow_keyboard())
             return
 
         request = TelegramTableCreateRequest(total_seats=flow.total_seats, llm_seat_count=llm_seats)
@@ -396,12 +372,12 @@ class TelegramApp:
                 request=request,
             )
         except ValueError as exc:
-            await self._send_message(chat_id, str(exc))
+            await self._send_message(chat_id, str(exc), self._build_lobby_keyboard(user_id))
             return
         finally:
             self._create_flows.pop(user_id, None)
 
-        await self._send_message(chat_id, self._format_created_table(session))
+        await self._send_message(chat_id, self._format_created_table(session), self._build_lobby_keyboard(user_id))
 
     async def _start_table(self, session: TelegramTableSession) -> None:
         logger.debug(
@@ -428,7 +404,7 @@ class TelegramApp:
 
         for index in range(1, session.llm_seat_count + 1):
             seat_id = f"llm_{index}"
-            seat_configs.append(SeatConfig(seat_id=seat_id, name=f"LLM {index}"))
+            seat_configs.append(SeatConfig(seat_id=seat_id, name=self._allocate_llm_name()))
             player_agents[seat_id] = LLMPlayerAgent(
                 seat_id=seat_id,
                 client=self._llm_client_factory(),
@@ -460,7 +436,7 @@ class TelegramApp:
 
     async def _notify_waiting_table(self, session: TelegramTableSession, text: str) -> None:
         for user in session.human_users():
-            await self._send_message(user.chat_id, text)
+            await self._send_message(user.chat_id, text, self._build_lobby_keyboard(user.user_id))
 
     async def _send_message(self, chat_id: int, text: str, reply_markup: Any | None = None) -> None:
         if self._send_message_callback is not None:
@@ -480,6 +456,11 @@ class TelegramApp:
             timeout=self.config.llm_timeout,
             max_output_tokens=self.config.llm_max_output_tokens,
         )
+
+    def _allocate_llm_name(self) -> str:
+        if self._llm_name_allocator is None:
+            self._llm_name_allocator = BotNameAllocator()
+        return self._llm_name_allocator.allocate()
 
     def _format_created_table(self, session: TelegramTableSession) -> str:
         lines = [
@@ -513,3 +494,66 @@ class TelegramApp:
             return int(raw.strip())
         except ValueError:
             return None
+
+    def _match_lobby_command(self, text: str) -> Any | None:
+        normalized = text.strip().lower()
+        mapping = {
+            "create table": self._handle_create_from_button,
+            "my table": self._handle_my_table_from_button,
+            "start game": self._handle_start_game_from_button,
+            "leave table": self._handle_leave_table_from_button,
+            "cancel table": self._handle_cancel_table_from_button,
+            "help": self._handle_help_from_button,
+        }
+        return mapping.get(normalized)
+
+    async def _handle_create_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
+        await self.handle_create_table_command(user_id=user_id, chat_id=chat_id)
+
+    async def _handle_my_table_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
+        await self.handle_my_table_command(user_id=user_id, chat_id=chat_id)
+
+    async def _handle_start_game_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
+        await self.handle_start_game_command(user_id=user_id, chat_id=chat_id)
+
+    async def _handle_leave_table_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
+        await self.handle_leave_table_command(user_id=user_id, chat_id=chat_id)
+
+    async def _handle_cancel_table_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
+        await self.handle_cancel_table_command(user_id=user_id, chat_id=chat_id)
+
+    async def _handle_help_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
+        await self.handle_help_command(chat_id=chat_id)
+
+    def _build_lobby_keyboard(self, user_id: int | None = None) -> Any | None:
+        session = self.registry.get_user_table(user_id) if user_id is not None else None
+        if session is None:
+            labels = [["Create Table"], ["Help"]]
+        elif session.status == TelegramTableState.WAITING:
+            if session.creator_user_id == user_id:
+                labels = [["My Table"], ["Start Game"], ["Cancel Table"], ["Help"]]
+            else:
+                labels = [["My Table"], ["Leave Table"], ["Help"]]
+        elif session.status == TelegramTableState.RUNNING:
+            labels = [["My Table"], ["Leave Table"], ["Help"]]
+        else:
+            labels = [["Create Table"], ["Help"]]
+        return self._make_reply_keyboard(labels)
+
+    def _build_create_flow_keyboard(self) -> Any | None:
+        return self._make_reply_keyboard([["Help"]])
+
+    def _make_reply_keyboard(self, labels: list[list[str]]) -> Any | None:
+        if self._bot is None:
+            return labels
+        try:
+            from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError(
+                "The aiogram package is required when TelegramApp is used with a bot instance."
+            ) from exc
+        return ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=label) for label in row] for row in labels],
+            resize_keyboard=True,
+            one_time_keyboard=False,
+        )

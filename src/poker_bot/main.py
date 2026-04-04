@@ -6,6 +6,7 @@ import logging
 
 from poker_bot.config import DEFAULT_CONFIG_PATH, LLMSettings, ProjectConfig, load_project_config
 from poker_bot.logging_utils import configure_logging
+from poker_bot.naming import BotNameAllocator
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.cli import CLIPlayerAgent
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
@@ -58,7 +59,7 @@ async def run_cli_mode(config: ProjectConfig, *, players_spec: str, max_hands: i
     seats: list[SeatConfig] = []
     agents = {}
     llm_client: LLMGameClient | None = None
-    llm_index = 0
+    llm_names = BotNameAllocator()
     _validate_cli_players(player_types, config.llm)
     logger.debug("Starting CLI mode with players=%s max_hands=%s", player_types, max_hands)
     for index, player_type in enumerate(player_types, start=1):
@@ -67,8 +68,7 @@ async def run_cli_mode(config: ProjectConfig, *, players_spec: str, max_hands: i
             seats.append(SeatConfig(seat_id=seat_id, name=f"CLI {index}"))
             agents[seat_id] = CLIPlayerAgent(seat_id)
         elif player_type == "llm":
-            llm_index += 1
-            seats.append(SeatConfig(seat_id=seat_id, name=f"LLM {llm_index}"))
+            seats.append(SeatConfig(seat_id=seat_id, name=llm_names.allocate()))
             if llm_client is None:
                 llm_client = LLMGameClient(
                     model=config.llm.model,

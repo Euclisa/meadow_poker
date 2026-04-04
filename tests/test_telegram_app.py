@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from poker_bot.players.llm import LLMGameClient
+from poker_bot.naming import BotNameAllocator
 from poker_bot.telegram_app.app import TelegramApp, TelegramAppConfig
 from poker_bot.types import TelegramTableState
 
@@ -10,26 +11,33 @@ from poker_bot.types import TelegramTableState
 class FakeResponsesAPI:
     def __init__(self, outputs: list[str]) -> None:
         self.outputs = list(outputs)
-        self.prompts: list[str] = []
+        self.messages_list: list[list[dict[str, str]]] = []
 
     async def create(
         self,
         *,
         model: str,
-        input: str,
+        messages: list[dict[str, str]],
         max_output_tokens: int | None = None,
     ) -> object:
-        self.prompts.append(input)
+        self.messages_list.append(messages)
         output = self.outputs.pop(0) if self.outputs else '{"action":"check"}'
-        return type("Response", (), {"output_text": output})()
+        message = type("Message", (), {"content": output})()
+        choice = type("Choice", (), {"message": message})()
+        return type("Response", (), {"choices": [choice]})()
 
 
 class FakeOpenAIClient:
     def __init__(self, outputs: list[str]) -> None:
-        self.responses = FakeResponsesAPI(outputs)
+        self.chat = type("Chat", (), {"completions": FakeResponsesAPI(outputs)})()
 
 
-def make_app(*, max_hands: int | None = None, llm_outputs: list[str] | None = None) -> tuple[TelegramApp, list[tuple[int, str, object | None]]]:
+def make_app(
+    *,
+    max_hands: int | None = None,
+    llm_outputs: list[str] | None = None,
+    llm_name_allocator: BotNameAllocator | None = None,
+) -> tuple[TelegramApp, list[tuple[int, str, object | None]]]:
     sent_messages: list[tuple[int, str, object | None]] = []
 
     async def send_message(chat_id: int, text: str, reply_markup: object | None = None) -> None:
@@ -49,6 +57,7 @@ def make_app(*, max_hands: int | None = None, llm_outputs: list[str] | None = No
         ),
         send_message=send_message,
         llm_client_factory=make_llm_client,
+        llm_name_allocator=llm_name_allocator,
     )
     return app, sent_messages
 
@@ -71,6 +80,7 @@ def test_create_table_guided_flow_and_creator_autojoin() -> None:
     assert [user.user_id for user in table.claimed_telegram_users] == [1]
     assert any("Created table" in text for _chat, text, _markup in messages)
     assert any("Deep link:" in text for _chat, text, _markup in messages)
+    assert any(markup == [["My Table"], ["Start Game"], ["Cancel Table"], ["Help"]] for _chat, _text, markup in messages)
 
 
 def test_join_and_start_require_creator_and_full_human_seats() -> None:
@@ -87,8 +97,7 @@ def test_join_and_start_require_creator_and_full_human_seats() -> None:
         await app.handle_start_game_command(user_id=2, chat_id=202)
         await app.handle_start_game_command(user_id=1, chat_id=101)
         await asyncio.sleep(0)
-        handled = await app.handle_callback_query(user_id=1, chat_id=101, data="poker:action:tg_1:fold")
-        assert handled is True
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="Fold")
         assert table.orchestrator_task is not None
         await table.orchestrator_task
 
@@ -136,8 +145,7 @@ def test_join_rejects_full_or_running_tables() -> None:
         await app.handle_join_command(user_id=2, chat_id=202, display_name="Bob", table_id=table.table_id)
         await app.handle_start_game_command(user_id=1, chat_id=101)
         await asyncio.sleep(0)
-        handled = await app.handle_callback_query(user_id=1, chat_id=101, data="poker:action:tg_1:fold")
-        assert handled is True
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="Fold")
         assert table.orchestrator_task is not None
         await table.orchestrator_task
         await app.handle_join_command(user_id=3, chat_id=303, display_name="Cara", table_id=table.table_id)
@@ -159,8 +167,7 @@ def test_mixed_table_can_complete_one_hand_and_unregister_users() -> None:
         assert table is not None
         await app.handle_start_game_command(user_id=1, chat_id=101)
         await asyncio.sleep(0)
-        handled = await app.handle_callback_query(user_id=1, chat_id=101, data="poker:action:tg_1:fold")
-        assert handled is True
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="Fold")
         assert table.orchestrator_task is not None
         await table.orchestrator_task
 
@@ -172,3 +179,40 @@ def test_mixed_table_can_complete_one_hand_and_unregister_users() -> None:
     texts = [text for _chat, text, _markup in messages]
     assert any("started with 2 seats" in text for text in texts)
     assert any("has completed" in text for text in texts)
+
+
+def test_telegram_human_and_llm_seat_names_are_assigned_cleanly() -> None:
+    app, _messages = make_app(
+        llm_name_allocator=BotNameAllocator(names=("Nova",), seed=1),
+    )
+
+    async def scenario() -> tuple[str, ...]:
+        await app.handle_create_table_command(user_id=1, chat_id=101)
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice Wonder", text="2")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice Wonder", text="1")
+        table = app.registry.get_user_table(1)
+        assert table is not None
+        await app.handle_start_game_command(user_id=1, chat_id=101)
+        assert table.engine is not None
+        return tuple(seat.name for seat in table.engine.get_public_table_view().seats)
+
+    seat_names = asyncio.run(scenario())
+
+    assert "Alice Wonder" in seat_names
+    assert "Nova_bot" in seat_names
+
+
+def test_lobby_buttons_work_as_text_commands() -> None:
+    app, messages = make_app()
+
+    async def scenario() -> None:
+        await app.handle_start_command(user_id=1, chat_id=101, display_name="Alice")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="Create Table")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="My Table")
+
+    asyncio.run(scenario())
+
+    assert any(markup == [["Create Table"], ["Help"]] for _chat, _text, markup in messages)
+    assert any("Table " in text and "Status: waiting" in text for _chat, text, _markup in messages)

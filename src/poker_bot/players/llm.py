@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from json import JSONDecodeError
+from dataclasses import dataclass, field
 from typing import Any
 
 from poker_bot.players.base import PlayerAgent
@@ -17,6 +18,12 @@ from poker_bot.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class LLMCompletionResult:
+    payload: dict[str, Any]
+    raw_text: str
 
 
 class LLMGameClient:
@@ -39,36 +46,33 @@ class LLMGameClient:
         self.retries = retries
         self._client = client
 
-    async def complete_json(self, prompt: str) -> dict[str, Any]:
+    async def complete_json(self, messages: list[dict[str, str]]) -> LLMCompletionResult:
         client = self._get_client()
         last_error: Exception | None = None
         logger.debug(
-            "LLM request start model=%s base_url=%s timeout=%s max_output_tokens=%s retries=%s prompt=%s",
+            "LLM request start model=%s base_url=%s timeout=%s max_output_tokens=%s retries=%s messages=%s",
             self.model,
             self.base_url,
             self.timeout,
             self.max_output_tokens,
             self.retries,
-            prompt,
+            messages,
         )
         for attempt in range(self.retries + 1):
             try:
                 logger.debug("LLM request attempt=%s model=%s", attempt + 1, self.model)
                 request_payload: dict[str, Any] = {
                     "model": self.model,
-                    "input": prompt,
+                    "messages": messages,
                 }
                 if self.max_output_tokens is not None:
                     request_payload["max_output_tokens"] = self.max_output_tokens
-                response = await client.responses.create(**request_payload)
-                self._ensure_non_reasoning_output(response)
-                raw_text = getattr(response, "output_text", None)
-                if not raw_text:
-                    raw_text = self._extract_output_text(response)
+                response = await client.chat.completions.create(**request_payload)
+                raw_text = self._extract_chat_completion_text(response)
                 logger.debug("LLM raw response model=%s raw_text=%s", self.model, raw_text)
                 parsed = self._parse_json_payload(raw_text)
                 logger.debug("LLM parsed JSON model=%s payload=%s", self.model, parsed)
-                return parsed
+                return LLMCompletionResult(payload=parsed, raw_text=raw_text)
             except Exception as exc:  # pragma: no cover - defensive provider wrapper
                 last_error = exc
                 response_dump = self._safe_debug_dump(locals().get("response"))
@@ -99,36 +103,25 @@ class LLMGameClient:
         return self._client
 
     @staticmethod
-    def _extract_output_text(response: Any) -> str:
-        output_items = getattr(response, "output", [])
-        text_fragments: list[str] = []
-        for item in output_items:
-            if getattr(item, "type", None) == "reasoning":
-                continue
-            for content in getattr(item, "content", []):
-                if getattr(content, "type", None) == "reasoning_text":
-                    continue
-                text = getattr(content, "text", None)
-                if text is not None:
+    def _extract_chat_completion_text(response: Any) -> str:
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            raise ValueError("LLM response did not contain any completion choices")
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            raise ValueError("LLM response did not contain a completion message")
+        content = getattr(message, "content", None)
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            text_fragments: list[str] = []
+            for item in content:
+                text = getattr(item, "text", None)
+                if isinstance(text, str) and text:
                     text_fragments.append(text)
-        if not text_fragments:
-            raise ValueError("LLM response did not contain non-reasoning output text")
-        return "".join(text_fragments)
-
-    @staticmethod
-    def _ensure_non_reasoning_output(response: Any) -> None:
-        output_items = getattr(response, "output", None)
-        if output_items is None:
-            return
-        for item in output_items:
-            if getattr(item, "type", None) == "reasoning":
-                continue
-            for content in getattr(item, "content", []):
-                if getattr(content, "type", None) == "reasoning_text":
-                    continue
-                if getattr(content, "text", None):
-                    return
-        raise ValueError("LLM response did not contain non-reasoning output")
+            if text_fragments:
+                return "".join(text_fragments)
+        raise ValueError("LLM response did not contain text output")
 
     @staticmethod
     def _safe_debug_dump(response: Any) -> str:
@@ -175,17 +168,25 @@ class LLMPlayerAgent(PlayerAgent):
             "You are a poker player. Return exactly one JSON object and nothing else. "
             "Do not include reasoning, explanations, markdown, code fences, or surrounding text."
         )
+        self._current_hand_number: int | None = None
+        self._history: list[dict[str, str]] = []
 
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
+        self._reset_history_if_needed(decision)
         prompt = self._build_prompt(decision)
+        messages = self._build_messages(prompt)
         logger.debug(
-            "LLMPlayerAgent building action seat_id=%s legal_actions=%s decision=%s",
+            "LLMPlayerAgent building action seat_id=%s legal_actions=%s hand_number=%s decision=%s history=%s",
             self.seat_id,
             decision.legal_actions,
+            decision.public_table_view.hand_number,
             decision,
+            self._history,
         )
-        payload = await self.client.complete_json(prompt)
-        action = self._parse_action(payload)
+        completion = await self.client.complete_json(messages)
+        self._history.append({"role": "user", "content": prompt})
+        self._history.append({"role": "assistant", "content": completion.raw_text})
+        action = self._parse_action(completion.payload)
         logger.debug("LLMPlayerAgent parsed action seat_id=%s action=%s", self.seat_id, action)
         return action
 
@@ -194,10 +195,28 @@ class LLMPlayerAgent(PlayerAgent):
         events: tuple[GameEvent, ...],
         view: PlayerView | PublicTableView,
     ) -> None:
+        if any(event.event_type == "hand_completed" for event in events):
+            self._current_hand_number = None
+            self._history.clear()
         return None
 
     async def close(self) -> None:
+        self._current_hand_number = None
+        self._history.clear()
         return None
+
+    def _build_messages(self, prompt: str) -> list[dict[str, str]]:
+        return [
+            {"role": "developer", "content": self.system_prompt},
+            *self._history,
+            {"role": "user", "content": prompt},
+        ]
+
+    def _reset_history_if_needed(self, decision: DecisionRequest) -> None:
+        hand_number = decision.public_table_view.hand_number
+        if self._current_hand_number != hand_number:
+            self._current_hand_number = hand_number
+            self._history.clear()
 
     def _build_prompt(self, decision: DecisionRequest) -> str:
         legal_lines = []
@@ -210,7 +229,6 @@ class LLMPlayerAgent(PlayerAgent):
                 )
 
         parts = [
-            self.system_prompt,
             f"Seat id: {decision.player_view.seat_id}",
             f"Player name: {decision.player_view.player_name}",
             f"Hole cards: {' '.join(decision.player_view.hole_cards)}",
