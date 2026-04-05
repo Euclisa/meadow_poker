@@ -783,6 +783,7 @@ class WebApp:
                 "  <meta charset=\"utf-8\">",
                 "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">",
                 f"  <title>{title}</title>",
+                "  <link rel=\"icon\" type=\"image/svg+xml\" href=\"/static/img/leaf.svg\">",
                 "  <link rel=\"stylesheet\" href=\"/static/css/styles.css\">",
                 "</head>",
                 f"<body {body_attributes}>",

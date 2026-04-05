@@ -51,6 +51,10 @@
   background: rgba(71, 104, 83, 0.42);
 }
 
+*::-webkit-scrollbar-button {
+  display: none;
+}
+
 *::-webkit-scrollbar-corner {
   background: transparent;
 }

@@ -667,6 +667,7 @@
   letter-spacing: 0.16em;
   color: rgba(33, 50, 41, 0.48);
   margin-bottom: 0.22rem;
+  margin-left: 0.3rem;
 }
 
 .history-strip__list {
@@ -849,19 +850,6 @@
   background: rgba(71, 104, 83, 0.38);
 }
 
-.completed-hands__list::-webkit-scrollbar-button {
-  display: none;
-  width: 0;
-  height: 0;
-}
-
-.completed-hands__list::-webkit-scrollbar-button:single-button,
-.completed-hands__list::-webkit-scrollbar-button:start:decrement,
-.completed-hands__list::-webkit-scrollbar-button:end:increment {
-  display: none;
-  width: 0;
-  height: 0;
-}
 
 .completed-hands__item {
   display: inline-flex;
