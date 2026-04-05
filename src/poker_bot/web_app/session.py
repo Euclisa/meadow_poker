@@ -26,6 +26,24 @@ class WebUserReservation:
     display_name: str
 
 
+@dataclass(frozen=True, slots=True)
+class WebShowdownReveal:
+    seat_id: str
+    hole_cards: tuple[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class WebShowdownWinner:
+    seat_id: str
+    amount: int
+
+
+@dataclass(frozen=True, slots=True)
+class WebShowdownState:
+    revealed_seats: tuple[WebShowdownReveal, ...]
+    winners: tuple[WebShowdownWinner, ...]
+
+
 @dataclass(slots=True)
 class WebTableSession:
     table_id: str
@@ -39,6 +57,7 @@ class WebTableSession:
     orchestrator_task: asyncio.Task[Any] | None = None
     status_message: str = "Waiting for players."
     activity_log: list[dict[str, Any]] = field(default_factory=list)
+    showdown_state: WebShowdownState | None = None
     _activity_counter: int = 0
     _watchers: set[asyncio.Queue[str]] = field(default_factory=set)
 

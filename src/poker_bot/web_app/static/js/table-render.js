@@ -16,7 +16,13 @@ import {
   shortPositionLabel,
 } from "./table-utils.js";
 
-export function renderStatusMarkup(snapshot, { flash = "", flashTone = "info", joinName = "", busy = false, actionAmount = "" } = {}) {
+export function renderStatusMarkup(snapshot, {
+  flash = "",
+  flashTone = "info",
+  joinName = "",
+  busy = false,
+  actionAmount = "",
+} = {}) {
   if (!snapshot) {
     return `<div class="panel panel--wide loading-card">Loading table...</div>`;
   }
@@ -104,6 +110,9 @@ function renderTableSurface(snapshot) {
   const publicTable = snapshot.public_table;
   const playerView = snapshot.player_view;
   const orderedSeats = orderSeatsForDisplay(publicTable.seats, playerView?.seat_id ?? null);
+  const showdown = snapshot.showdown;
+  const revealedSeats = new Map((showdown?.revealed_seats ?? []).map((seat) => [seat.seat_id, seat]));
+  const seatAmountBadges = new Map((snapshot.seat_amount_badges ?? []).map((badge) => [badge.seat_id, badge]));
 
   return `
     <section class="table-surface">
@@ -124,6 +133,8 @@ function renderTableSurface(snapshot) {
             playerView,
             seatCount: orderedSeats.length,
             displayIndex: index,
+            reveal: revealedSeats.get(seat.seat_id) ?? null,
+            seatAmountBadge: seatAmountBadges.get(seat.seat_id) ?? null,
           }),
         )
         .join("")}
@@ -131,29 +142,25 @@ function renderTableSurface(snapshot) {
   `;
 }
 
-function renderSeatPanel({ seat, publicTable, playerView, seatCount, displayIndex }) {
+function renderSeatPanel({ seat, publicTable, playerView, seatCount, displayIndex, reveal, seatAmountBadge }) {
   const isViewer = seat.is_viewer && playerView;
   const style = seatPositionStyle(displayIndex, seatCount);
   const status = seatStatusMeta(seat, publicTable.acting_seat_id);
   const positionLabel = seat.position ? shortPositionLabel(seat.position) : "";
   const positionTitle = seat.position ? prettyPhaseLabel(seat.position) : "";
-  const betSide = seatBetSide(displayIndex, seatCount);
-  const cardsMarkup = isViewer
-    ? renderCards(playerView.hole_cards)
-    : seat.in_hand && !seat.folded
-      ? `${renderCard("xx", { hidden: true })}${renderCard("xx", { hidden: true })}`
-      : "";
-
-  const betMarkup = seat.street_contribution > 0
-    ? `<div class="table-seat__bet table-seat__bet--${betSide}">
-        <span class="chip-icon" aria-hidden="true"></span>
-        <span class="table-seat__bet-amount">${formatChips(seat.street_contribution)}</span>
-      </div>`
-    : "";
+  const amountBadgeSide = seatBetSide(displayIndex, seatCount);
+  const cardsMarkup = reveal
+    ? renderCards(reveal.hole_cards)
+    : isViewer
+      ? renderCards(playerView.hole_cards)
+      : seat.in_hand && !seat.folded
+        ? `${renderCard("xx", { hidden: true })}${renderCard("xx", { hidden: true })}`
+        : "";
+  const amountBadgeMarkup = renderSeatAmountBadge(seatAmountBadge, { side: amountBadgeSide });
 
   return `
     <article
-      class="table-seat${seat.is_viewer ? " table-seat--viewer" : ""}${seat.seat_id === publicTable.acting_seat_id ? " table-seat--acting" : ""}${seat.folded ? " table-seat--folded" : ""}"
+      class="table-seat${seat.is_viewer ? " table-seat--viewer" : ""}${seat.seat_id === publicTable.acting_seat_id ? " table-seat--acting" : ""}${seat.folded ? " table-seat--folded" : ""}${reveal ? " table-seat--revealed" : ""}"
       style="${style}"
     >
       ${cardsMarkup ? `<div class="table-seat__cards">${cardsMarkup}</div>` : ""}
@@ -178,8 +185,20 @@ function renderSeatPanel({ seat, publicTable, playerView, seatCount, displayInde
           }
         </div>
       </div>
-      ${betMarkup}
+      ${amountBadgeMarkup}
     </article>
+  `;
+}
+
+function renderSeatAmountBadge(seatAmountBadge, { side }) {
+  if (!seatAmountBadge || seatAmountBadge.amount == null || seatAmountBadge.amount <= 0) {
+    return "";
+  }
+  return `
+    <div class="table-seat__bet table-seat__bet--${side}">
+      <span class="chip-icon" aria-hidden="true"></span>
+      <span class="table-seat__bet-amount">${formatChips(seatAmountBadge.amount)}</span>
+    </div>
   `;
 }
 

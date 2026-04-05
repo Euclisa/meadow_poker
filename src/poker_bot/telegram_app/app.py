@@ -11,6 +11,7 @@ from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
 from poker_bot.players.telegram import TelegramPlayerAgent
 from poker_bot.poker.engine import PokerEngine
+from poker_bot.table_runner import run_table
 from poker_bot.telegram_app.registry import TelegramTableRegistry
 from poker_bot.telegram_app.session import TelegramTableSession
 from poker_bot.types import (
@@ -446,7 +447,7 @@ class TelegramApp:
     async def _run_session(self, session: TelegramTableSession) -> None:
         assert session.orchestrator is not None
         try:
-            await session.orchestrator.run(max_hands=self.config.max_hands_per_table, close_agents=True)
+            await run_table(session.orchestrator, max_hands=self.config.max_hands_per_table, close_agents=True)
         finally:
             logger.info("Table %s completed", session.table_id)
             self.registry.mark_completed(session)

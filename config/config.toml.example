@@ -27,3 +27,4 @@ max_hands_per_table = 1
 host = "127.0.0.1"
 port = 8080
 max_hands_per_table = 1
+showdown_delay_seconds = 5.0

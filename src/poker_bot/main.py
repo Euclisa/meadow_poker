@@ -11,6 +11,7 @@ from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.cli import CLIPlayerAgent
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
 from poker_bot.poker.engine import PokerEngine
+from poker_bot.table_runner import run_table
 from poker_bot.telegram_app.app import TelegramApp, TelegramAppConfig
 from poker_bot.types import SeatConfig, TableConfig
 
@@ -91,7 +92,7 @@ async def run_cli_mode(config: ProjectConfig, *, players_spec: str, max_hands: i
         seats,
     )
     orchestrator = GameOrchestrator(engine, agents)
-    await orchestrator.run(max_hands=max_hands)
+    await run_table(orchestrator, max_hands=max_hands)
 
 
 async def run_telegram_mode(config: ProjectConfig) -> None:
@@ -125,6 +126,7 @@ async def run_web_mode(config: ProjectConfig) -> None:
             starting_stack=config.game.starting_stack,
             max_players=config.game.max_players,
             max_hands_per_table=config.web.max_hands_per_table,
+            showdown_delay_seconds=config.web.showdown_delay_seconds,
         )
     )
     await app.run()

@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from poker_bot.players.rendering import render_events
-from poker_bot.types import DecisionRequest, GameEvent, PlayerView, PublicTableView, SeatSnapshot
+from poker_bot.types import DecisionRequest, GameEvent, GamePhase, PlayerView, PublicTableView, SeatSnapshot
 from poker_bot.web_app.player import WebPlayerAgent
-from poker_bot.web_app.session import WebTableSession, WebUserReservation
+from poker_bot.web_app.session import WebShowdownState, WebTableSession, WebUserReservation
 
 
 def serialize_lobby(registry: Any) -> dict[str, Any]:
@@ -60,6 +60,8 @@ def serialize_table_snapshot(
             agent = session.player_agents.get(viewer.seat_id)
             if isinstance(agent, WebPlayerAgent) and agent.pending_decision is not None:
                 pending_decision = _serialize_decision(agent.pending_decision)
+    else:
+        public_view = None
 
     return {
         "status": session.status.value,
@@ -87,9 +89,11 @@ def serialize_table_snapshot(
         "public_table": public_table,
         "player_view": player_view,
         "pending_decision": pending_decision,
+        "seat_amount_badges": _serialize_seat_amount_badges(public_view, session.showdown_state),
         "recent_events": _serialize_recent_events(session),
         "controls": _serialize_controls(session, viewer=viewer, has_pending_decision=pending_decision is not None),
         "message": session.status_message,
+        "showdown": _serialize_showdown(session.showdown_state),
     }
 
 
@@ -148,6 +152,54 @@ def _serialize_recent_events(session: WebTableSession) -> list[dict[str, Any]]:
             )
 
     return [*session.activity_log, *game_events][-40:]
+
+
+def _serialize_showdown(showdown: WebShowdownState | None) -> dict[str, Any] | None:
+    if showdown is None:
+        return None
+    return {
+        "active": True,
+        "revealed_seats": [
+            {
+                "seat_id": seat.seat_id,
+                "hole_cards": list(seat.hole_cards),
+            }
+            for seat in showdown.revealed_seats
+        ],
+    }
+
+
+def _serialize_seat_amount_badges(
+    public_view: PublicTableView | None,
+    showdown: WebShowdownState | None,
+) -> list[dict[str, Any]]:
+    if showdown is not None:
+        return [
+            {
+                "seat_id": winner.seat_id,
+                "amount": winner.amount,
+            }
+            for winner in showdown.winners
+            if winner.amount > 0
+        ]
+    if public_view is None:
+        return []
+    if public_view.phase not in {
+        GamePhase.PREFLOP,
+        GamePhase.FLOP,
+        GamePhase.TURN,
+        GamePhase.RIVER,
+        GamePhase.SHOWDOWN,
+    }:
+        return []
+    return [
+        {
+            "seat_id": seat.seat_id,
+            "amount": seat.street_contribution,
+        }
+        for seat in public_view.seats
+        if seat.street_contribution > 0
+    ]
 
 
 def _event_kind(event: GameEvent) -> str:

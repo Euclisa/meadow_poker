@@ -43,11 +43,7 @@ class RecordingOrchestrator:
     def __init__(self, engine, agents) -> None:
         self.engine = engine
         self.agents = agents
-        self.max_hands = None
         RecordingOrchestrator.last_instance = self
-
-    async def run(self, *, max_hands: int) -> None:
-        self.max_hands = max_hands
 
 
 def make_config(*, with_llm: bool = True) -> ProjectConfig:
@@ -59,10 +55,19 @@ def make_config(*, with_llm: bool = True) -> ProjectConfig:
 
 
 def test_run_cli_mode_assigns_human_names_and_bot_seats(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_table(orchestrator, *, max_hands: int, close_agents: bool = True, after_hand=None) -> None:
+        captured["orchestrator"] = orchestrator
+        captured["max_hands"] = max_hands
+        captured["close_agents"] = close_agents
+        captured["after_hand"] = after_hand
+
     monkeypatch.setattr(main_module, "CLIPlayerAgent", RecordingCLIPlayerAgent)
     monkeypatch.setattr(main_module, "LLMGameClient", RecordingLLMGameClient)
     monkeypatch.setattr(main_module, "LLMPlayerAgent", RecordingLLMPlayerAgent)
     monkeypatch.setattr(main_module, "GameOrchestrator", RecordingOrchestrator)
+    monkeypatch.setattr(main_module, "run_table", fake_run_table)
 
     asyncio.run(run_cli_mode(make_config(), players_spec="Alice,bot,cli", max_hands=7))
 
@@ -77,14 +82,20 @@ def test_run_cli_mode_assigns_human_names_and_bot_seats(monkeypatch: pytest.Monk
     assert isinstance(orchestrator.agents["p3"], RecordingCLIPlayerAgent)
     assert orchestrator.agents["p2"].recent_hand_count == 5
     assert orchestrator.agents["p2"].log_thoughts is False
-    assert orchestrator.max_hands == 7
+    assert captured["max_hands"] == 7
+    assert captured["close_agents"] is True
+    assert captured["after_hand"] is None
 
 
 def test_run_cli_mode_passes_llm_log_thoughts(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_run_table(orchestrator, *, max_hands: int, close_agents: bool = True, after_hand=None) -> None:
+        del orchestrator, max_hands, close_agents, after_hand
+
     monkeypatch.setattr(main_module, "CLIPlayerAgent", RecordingCLIPlayerAgent)
     monkeypatch.setattr(main_module, "LLMGameClient", RecordingLLMGameClient)
     monkeypatch.setattr(main_module, "LLMPlayerAgent", RecordingLLMPlayerAgent)
     monkeypatch.setattr(main_module, "GameOrchestrator", RecordingOrchestrator)
+    monkeypatch.setattr(main_module, "run_table", fake_run_table)
 
     config = ProjectConfig(
         game=GameSettings(),

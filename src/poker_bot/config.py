@@ -115,6 +115,7 @@ class WebSettings:
     host: str = "127.0.0.1"
     port: int = 8080
     max_hands_per_table: int | None = None
+    showdown_delay_seconds: float = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +157,7 @@ def load_project_config(path: str | Path = DEFAULT_CONFIG_PATH) -> ProjectConfig
         host=str(web_raw.get("host", "127.0.0.1")),
         port=int(web_raw.get("port", 8080)),
         max_hands_per_table=_optional_int(web_raw.get("max_hands_per_table")),
+        showdown_delay_seconds=float(web_raw.get("showdown_delay_seconds", 5.0)),
     )
 
     _validate_project_config(game=game, telegram=telegram, web=web)
@@ -174,6 +176,8 @@ def _validate_project_config(
         raise ValueError("web.host must not be empty")
     if not 0 < web.port < 65_536:
         raise ValueError("web.port must be between 1 and 65535")
+    if web.showdown_delay_seconds < 0:
+        raise ValueError("web.showdown_delay_seconds must be >= 0")
     if telegram.bot_token is None:
         # Telegram mode may never be used locally, so keep it optional here.
         return

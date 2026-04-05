@@ -135,6 +135,58 @@ def test_orchestrator_retries_same_seat_after_invalid_action() -> None:
     assert agent_one.update_counts_at_decision[1] == agent_one.update_counts_at_decision[0]
 
 
+def test_orchestrator_play_hand_returns_started_false_when_no_hand_can_begin() -> None:
+    engine = PokerEngine.create_table(
+        TableConfig(deck_factory=PredefinedDeckFactory([])),
+        [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
+    )
+    agent_one = ScriptedAgent("p1", actions=[])
+    agent_two = ScriptedAgent("p2", actions=[])
+    orchestrator = GameOrchestrator(engine, {"p1": agent_one, "p2": agent_two})
+
+    result = asyncio.run(orchestrator.play_hand())
+
+    assert result.started is False
+    assert result.hand_number is None
+    assert result.table_complete is True
+    assert any(event.event_type == "table_completed" for event in result.events)
+
+
+def test_orchestrator_play_hand_marks_showdown_only_for_real_showdown() -> None:
+    showdown_orchestrator = make_heads_up_orchestrator(
+        ScriptedAgent(
+            "p1",
+            actions=[
+                PlayerAction(ActionType.CALL),
+                PlayerAction(ActionType.CHECK),
+                PlayerAction(ActionType.CHECK),
+                PlayerAction(ActionType.CHECK),
+            ],
+        ),
+        ScriptedAgent(
+            "p2",
+            actions=[
+                PlayerAction(ActionType.CHECK),
+                PlayerAction(ActionType.CHECK),
+                PlayerAction(ActionType.CHECK),
+                PlayerAction(ActionType.CHECK),
+            ],
+        ),
+    )
+    fold_orchestrator = make_heads_up_orchestrator(
+        ScriptedAgent("p1", actions=[PlayerAction(ActionType.FOLD)]),
+        ScriptedAgent("p2", actions=[]),
+    )
+
+    showdown_result = asyncio.run(showdown_orchestrator.play_hand())
+    fold_result = asyncio.run(fold_orchestrator.play_hand())
+
+    assert showdown_result.started is True
+    assert showdown_result.ended_in_showdown is True
+    assert fold_result.started is True
+    assert fold_result.ended_in_showdown is False
+
+
 def test_orchestrator_flushes_terminal_results_for_non_acting_seats() -> None:
     agent_one = ScriptedAgent("p1", actions=[PlayerAction(ActionType.FOLD)])
     agent_two = ScriptedAgent("p2", actions=[])

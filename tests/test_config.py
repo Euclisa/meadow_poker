@@ -70,3 +70,34 @@ def test_load_project_config_rejects_invalid_openrouter_sort(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="llm.openrouter.sort must be one of"):
         load_project_config(config_path)
+
+
+def test_load_project_config_reads_web_showdown_delay(tmp_path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        dedent(
+            """
+            [web]
+            showdown_delay_seconds = 1.25
+            """
+        ).strip()
+    )
+
+    config = load_project_config(config_path)
+
+    assert config.web.showdown_delay_seconds == 1.25
+
+
+def test_load_project_config_rejects_negative_web_showdown_delay(tmp_path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        dedent(
+            """
+            [web]
+            showdown_delay_seconds = -0.5
+            """
+        ).strip()
+    )
+
+    with pytest.raises(ValueError, match="web.showdown_delay_seconds must be >= 0"):
+        load_project_config(config_path)

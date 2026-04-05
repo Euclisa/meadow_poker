@@ -140,6 +140,13 @@
     0 10px 20px rgba(33, 50, 41, 0.15);
 }
 
+.table-seat--revealed .table-seat__info {
+  border-color: rgba(239, 204, 165, 0.65);
+  box-shadow:
+    0 0 0 1px rgba(239, 204, 165, 0.42),
+    0 10px 22px rgba(33, 50, 41, 0.16);
+}
+
 .table-seat--acting .table-seat__info {
   animation: acting-glow 1.7s ease-in-out infinite;
 }

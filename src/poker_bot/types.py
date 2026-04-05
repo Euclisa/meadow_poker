@@ -156,6 +156,15 @@ class PlayerUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class HandRunResult:
+    started: bool
+    hand_number: int | None
+    ended_in_showdown: bool
+    table_complete: bool
+    events: tuple[GameEvent, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ActionResult:
     ok: bool
     error: ActionValidationError | None = None

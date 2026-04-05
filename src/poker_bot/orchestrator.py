@@ -5,7 +5,15 @@ import logging
 
 from poker_bot.players.base import PlayerAgent
 from poker_bot.poker.engine import PokerEngine
-from poker_bot.types import ActionValidationError, GameEvent, GamePhase, PlayerUpdate, PlayerUpdateType
+from poker_bot.table_runner import run_table
+from poker_bot.types import (
+    ActionValidationError,
+    GameEvent,
+    GamePhase,
+    HandRunResult,
+    PlayerUpdate,
+    PlayerUpdateType,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,35 +41,61 @@ class GameOrchestrator:
         self._stop_requested = True
 
     async def run(self, max_hands: int | None = None, close_agents: bool = True) -> None:
-        hands_played = 0
-        try:
-            while not self._stop_requested:
-                logger.info("Starting next hand hands_played=%s max_hands=%s", hands_played, max_hands)
-                start_result = self.engine.start_next_hand()
-                self._append_events(start_result.events)
-                logger.debug("start_next_hand result=%s events=%s", start_result, start_result.events)
-                await self._deliver_updates()
-                if not start_result.ok:
-                    logger.info("Table ended: start_next_hand returned ok=False")
-                    break
+        await run_table(self, max_hands=max_hands, close_agents=close_agents)
 
-                await self._run_current_hand()
-                hands_played += 1
-                if max_hands is not None and hands_played >= max_hands:
-                    logger.info("Max hands reached (%s), ending table", max_hands)
-                    if self.engine.get_phase() != GamePhase.TABLE_COMPLETE:
-                        self._append_events((
-                            GameEvent("table_completed", {"reason": "max_hands_reached", "hand_number": hands_played}),
-                        ))
-                    break
-        finally:
-            await self._deliver_updates(force_table_completed=True)
-            if close_agents:
-                await self.close()
+    async def play_hand(self) -> HandRunResult:
+        if self._stop_requested:
+            return HandRunResult(
+                started=False,
+                hand_number=None,
+                ended_in_showdown=False,
+                table_complete=self.engine.get_phase() == GamePhase.TABLE_COMPLETE,
+            )
+
+        logger.info("Starting next hand event_index=%s", len(self.event_log))
+        start_index = len(self.event_log)
+        start_result = self.engine.start_next_hand()
+        self._append_events(start_result.events)
+        logger.debug("start_next_hand result=%s events=%s", start_result, start_result.events)
+        await self._deliver_updates()
+        if not start_result.ok:
+            logger.info("Table ended: start_next_hand returned ok=False")
+            return HandRunResult(
+                started=False,
+                hand_number=None,
+                ended_in_showdown=False,
+                table_complete=self.engine.get_phase() == GamePhase.TABLE_COMPLETE,
+                events=tuple(self.event_log[start_index:]),
+            )
+
+        await self._run_current_hand()
+        hand_events = tuple(self.event_log[start_index:])
+        hand_started = next(
+            (event for event in hand_events if event.event_type == "hand_started"),
+            None,
+        )
+        hand_number = hand_started.payload["hand_number"] if hand_started is not None else None
+        return HandRunResult(
+            started=True,
+            hand_number=hand_number,
+            ended_in_showdown=any(event.event_type == "showdown_started" for event in hand_events),
+            table_complete=self.engine.get_phase() == GamePhase.TABLE_COMPLETE,
+            events=hand_events,
+        )
 
     async def close(self) -> None:
         for agent in self.player_agents.values():
             await agent.close()
+
+    async def complete_table(self, *, reason: str, hand_number: int) -> None:
+        if self.engine.get_phase() == GamePhase.TABLE_COMPLETE or self._stop_requested:
+            return
+        logger.info("Completing table reason=%s hand_number=%s", reason, hand_number)
+        self._stop_requested = True
+        self._append_events((
+            GameEvent("table_completed", {"reason": reason, "hand_number": hand_number}),
+        ))
+        await self._deliver_updates(force_table_completed=True)
 
     async def _run_current_hand(self) -> None:
         while not self.engine.is_hand_complete():

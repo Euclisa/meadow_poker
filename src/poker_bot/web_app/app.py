@@ -12,11 +12,18 @@ from poker_bot.naming import BotNameAllocator
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
 from poker_bot.poker.engine import PokerEngine
+from poker_bot.table_runner import run_table
 from poker_bot.types import ActionType, PlayerAction, SeatConfig, TableConfig, TelegramTableState
 from poker_bot.web_app.player import WebPlayerAgent
 from poker_bot.web_app.registry import WebTableRegistry
 from poker_bot.web_app.serialization import serialize_lobby, serialize_table_snapshot
-from poker_bot.web_app.session import WebTableCreateRequest, WebTableSession
+from poker_bot.web_app.session import (
+    WebShowdownReveal,
+    WebShowdownState,
+    WebShowdownWinner,
+    WebTableCreateRequest,
+    WebTableSession,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +40,7 @@ class WebAppConfig:
     max_players: int = 6
     llm: LLMSettings = field(default_factory=LLMSettings)
     max_hands_per_table: int | None = None
+    showdown_delay_seconds: float = 5.0
 
 
 class WebApp:
@@ -337,8 +345,23 @@ class WebApp:
 
     async def _run_session(self, session: WebTableSession) -> None:
         assert session.orchestrator is not None
+
+        async def after_hand(result: Any) -> None:
+            if not result.ended_in_showdown:
+                return
+            session.showdown_state = self._build_showdown_state(result)
+            await self._broadcast_session(session, include_lobby=False)
+            await asyncio.sleep(self.config.showdown_delay_seconds)
+            session.showdown_state = None
+            await self._broadcast_session(session, include_lobby=False)
+
         try:
-            await session.orchestrator.run(max_hands=self.config.max_hands_per_table, close_agents=True)
+            await run_table(
+                session.orchestrator,
+                max_hands=self.config.max_hands_per_table,
+                close_agents=True,
+                after_hand=after_hand,
+            )
         finally:
             logger.info("Web table %s completed", session.table_id)
             self.registry.mark_completed(session)
@@ -425,6 +448,28 @@ class WebApp:
             starting_stack=self.config.starting_stack,
             max_players=self.config.max_players,
             max_hands_per_table=self.config.max_hands_per_table,
+        )
+
+    def _build_showdown_state(self, result: Any) -> WebShowdownState:
+        revealed_seats = tuple(
+            WebShowdownReveal(
+                seat_id=event.payload["seat_id"],
+                hole_cards=tuple(event.payload["hole_cards"]),
+            )
+            for event in result.events
+            if event.event_type == "showdown_revealed"
+        )
+        winners = tuple(
+            WebShowdownWinner(
+                seat_id=event.payload["seat_id"],
+                amount=event.payload["amount"],
+            )
+            for event in result.events
+            if event.event_type == "pot_awarded"
+        )
+        return WebShowdownState(
+            revealed_seats=revealed_seats,
+            winners=winners,
         )
 
     def _authorize_view(self, session: WebTableSession, seat_token: str | None) -> str | None:
