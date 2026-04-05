@@ -415,23 +415,24 @@ function renderHistoryStrip(snapshot) {
 
 function renderCompletedHands(snapshot) {
   const hands = snapshot.completed_hands ?? [];
-  if (hands.length === 0 || snapshot.replay?.active) {
-    return "";
-  }
   return `
     <section class="panel panel--history panel--completed-hands">
       <span class="history-strip__label">Completed hands</span>
       <div class="completed-hands__list">
-        ${hands
-          .map(
-            (hand) => `
-              <a class="completed-hands__item" href="${escapeHtml(hand.replay_path)}" target="_blank" rel="noreferrer">
-                <span>Hand #${escapeHtml(hand.hand_number)}</span>
-                <span class="chip chip--soft">${hand.ended_in_showdown ? "showdown" : "no showdown"}</span>
-              </a>
-            `,
-          )
-          .join("")}
+        ${
+          hands.length === 0
+            ? `<span class="completed-hands__item completed-hands__item--empty">Completed hands will appear here.</span>`
+            : hands
+                .map(
+                  (hand) => `
+                    <a class="completed-hands__item" href="${escapeHtml(hand.replay_path)}" target="_blank" rel="noreferrer">
+                      <span>Hand #${escapeHtml(hand.hand_number)}</span>
+                      <span class="chip chip--soft">${hand.ended_in_showdown ? "showdown" : "no showdown"}</span>
+                    </a>
+                  `,
+                )
+                .join("")
+        }
       </div>
     </section>
   `;
