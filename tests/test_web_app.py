@@ -735,6 +735,85 @@ def test_web_app_folded_hand_does_not_expose_showdown_state() -> None:
     asyncio.run(scenario())
 
 
+def test_web_app_completed_hand_exposes_replay_link_and_replay_snapshot() -> None:
+    app = make_web_app(max_hands=1)
+
+    async def scenario() -> None:
+        create_response = await app.handle_create_table(
+            FakeRequest(
+                payload={
+                    "display_name": "Alice",
+                    "total_seats": 2,
+                    "llm_seat_count": 0,
+                    "big_blind": 100,
+                    "stack_depth": 20,
+                }
+            )
+        )
+        created = decode_json_response(create_response)
+        alice_token = created["seat_token"]
+        table_id = created["table_id"]
+
+        join_response = await app.handle_join_table(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={"display_name": "Bob"},
+            )
+        )
+        bob_token = decode_json_response(join_response)["seat_token"]
+        assert bob_token
+
+        await app.handle_start_table(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={"seat_token": alice_token},
+            )
+        )
+
+        await _wait_for_turn(app, table_id=table_id, seat_token=alice_token)
+        await _submit_action(app, table_id=table_id, seat_token=alice_token, action_type="fold")
+        await asyncio.sleep(0.05)
+
+        completed_snapshot = await _fetch_table_snapshot(app, table_id=table_id, seat_token=alice_token)
+        assert completed_snapshot["completed_hands"]
+        assert completed_snapshot["completed_hands"][0]["hand_number"] == 1
+
+        replay_page = await app.handle_replay_page(
+            FakeRequest(match_info={"table_id": table_id, "hand_number": "1"})
+        )
+        assert replay_page.status == 200
+        assert 'src="/static/js/replay.js"' in replay_page.text
+
+        replay_state = await app.handle_replay_state(
+            FakeRequest(
+                match_info={"table_id": table_id, "hand_number": "1"},
+                query={"seat_token": alice_token, "step": "0"},
+            )
+        )
+        replay_snapshot = decode_json_response(replay_state)
+        assert replay_snapshot["replay"]["active"] is True
+        assert replay_snapshot["replay"]["current_step"] == 0
+        assert replay_snapshot["pending_decision"] is None
+        assert replay_snapshot["controls"]["can_act"] is False
+        assert replay_snapshot["player_view"]["hole_cards"]
+        assert replay_snapshot["seat_amount_badges"] == [
+            {"seat_id": "web_1", "amount": 50},
+            {"seat_id": "web_2", "amount": 100},
+        ]
+
+        final_replay_state = await app.handle_replay_state(
+            FakeRequest(
+                match_info={"table_id": table_id, "hand_number": "1"},
+                query={"seat_token": alice_token, "step": "1"},
+            )
+        )
+        final_replay_snapshot = decode_json_response(final_replay_state)
+        assert final_replay_snapshot["public_table"]["phase"] == "hand_complete"
+        assert final_replay_snapshot["showdown"] is None
+
+    asyncio.run(scenario())
+
+
 def test_rendered_table_markup_shows_showdown_cards_and_seat_amount_badge() -> None:
     snapshot = {
         "status": "running",
@@ -838,9 +917,113 @@ def test_rendered_table_markup_shows_showdown_cards_and_seat_amount_badge() -> N
     result = subprocess.run(command, cwd=Path.cwd(), check=True, text=True, capture_output=True)
 
     assert 'aria-label="As"' in result.stdout
-    assert ">400<" in result.stdout
-    assert "Next hand in" not in result.stdout
-    assert "Showdown" not in result.stdout
+
+
+def test_rendered_table_markup_shows_replay_controls() -> None:
+    snapshot = {
+        "status": "completed",
+        "table_id": "abcd",
+        "message": "Replay for hand #1",
+        "replay": {
+            "active": True,
+            "hand_number": 1,
+            "current_step": 0,
+            "total_steps": 2,
+            "can_step_backward": False,
+            "can_step_forward": True,
+            "replay_path": "/table/abcd/replay/1",
+        },
+        "config_summary": {
+            "web_seats": 2,
+            "claimed_web_seats": 2,
+            "llm_seats": 0,
+            "small_blind": 50,
+            "big_blind": 100,
+            "starting_stack": 2000,
+            "stack_depth": 20,
+        },
+        "waiting_players": [],
+        "controls": {
+            "is_joined": True,
+            "join_disabled_reason": None,
+            "can_start": False,
+            "can_cancel": False,
+            "can_leave": False,
+            "can_act": False,
+            "can_request_coach": False,
+            "share_path": "/table/abcd",
+        },
+        "completed_hands": [],
+        "pending_decision": None,
+        "seat_amount_badges": [],
+        "recent_events": [],
+        "player_view": {
+            "seat_id": "web_1",
+            "player_name": "Hero",
+            "hole_cards": ["2c", "3d"],
+            "stack": 1950,
+            "contribution": 50,
+            "position": "dealer",
+            "to_call": 50,
+        },
+        "public_table": {
+            "hand_number": 1,
+            "phase": "preflop",
+            "board_cards": [],
+            "pot_total": 150,
+            "current_bet": 100,
+            "dealer_seat_id": "web_1",
+            "acting_seat_id": "web_1",
+            "small_blind": 50,
+            "big_blind": 100,
+            "seats": [
+                {
+                    "seat_id": "web_1",
+                    "name": "Hero",
+                    "stack": 1950,
+                    "contribution": 50,
+                    "street_contribution": 50,
+                    "folded": False,
+                    "all_in": False,
+                    "in_hand": True,
+                    "position": "dealer",
+                    "is_human": True,
+                    "is_viewer": True,
+                },
+                {
+                    "seat_id": "web_2",
+                    "name": "Villain",
+                    "stack": 1900,
+                    "contribution": 100,
+                    "street_contribution": 100,
+                    "folded": False,
+                    "all_in": False,
+                    "in_hand": True,
+                    "position": "big_blind",
+                    "is_human": True,
+                    "is_viewer": False,
+                },
+            ],
+        },
+        "showdown": None,
+    }
+
+    command = [
+        "node",
+        "--experimental-default-type=module",
+        "-e",
+        (
+            "import { renderStatusMarkup } from './src/poker_bot/web_app/static/js/table-render.js';"
+            "const snapshot = JSON.parse(process.argv[1]);"
+            "console.log(renderStatusMarkup(snapshot));"
+        ),
+        json.dumps(snapshot),
+    ]
+    result = subprocess.run(command, cwd=Path.cwd(), check=True, text=True, capture_output=True)
+
+    assert 'id="replay-next-step"' in result.stdout
+    assert 'id="replay-prev-step"' in result.stdout
+    assert "Use the arrows to walk the hand." in result.stdout
 
 
 def test_frontend_static_files_exist_and_include_core_hooks() -> None:

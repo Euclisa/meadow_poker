@@ -5,7 +5,7 @@ from typing import Any
 
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.base import PlayerAgent
-from poker_bot.poker.decks import PredefinedDeckFactory
+from poker_bot.poker.decks import DeckSequenceFactory
 from poker_bot.poker.engine import PokerEngine
 from poker_bot.types import (
     ActionType,
@@ -74,7 +74,7 @@ def make_heads_up_orchestrator(agent_one: ScriptedAgent, agent_two: ScriptedAgen
         "Tc",
     )
     engine = PokerEngine.create_table(
-        TableConfig(deck_factory=PredefinedDeckFactory([deck])),
+        TableConfig(deck_factory=DeckSequenceFactory([deck])),
         [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
     )
     orchestrator = GameOrchestrator(engine, {"p1": agent_one, "p2": agent_two})
@@ -158,7 +158,7 @@ def test_orchestrator_retries_same_seat_after_invalid_action() -> None:
 
 def test_orchestrator_play_hand_returns_started_false_when_no_hand_can_begin() -> None:
     engine = PokerEngine.create_table(
-        TableConfig(deck_factory=PredefinedDeckFactory([])),
+        TableConfig(deck_factory=DeckSequenceFactory([])),
         [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
     )
     agent_one = ScriptedAgent("p1", actions=[])
@@ -231,7 +231,7 @@ def test_orchestrator_flushes_terminal_results_for_non_acting_seats() -> None:
 def test_orchestrator_flushes_hand_end_events_before_next_hand_prompt() -> None:
     engine = PokerEngine.create_table(
         TableConfig(
-            deck_factory=PredefinedDeckFactory(
+            deck_factory=DeckSequenceFactory(
                 [
                     ("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"),
                     ("Qs", "Jh", "Qd", "Jd", "2h", "3c", "4d", "5s", "6c"),
@@ -267,7 +267,7 @@ def test_orchestrator_marks_table_completed_updates() -> None:
     agent_two = ScriptedAgent("p2", actions=[])
     deck = ("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc")
     engine = PokerEngine.create_table(
-        TableConfig(deck_factory=PredefinedDeckFactory([deck])),
+        TableConfig(deck_factory=DeckSequenceFactory([deck])),
         [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
     )
     orchestrator = GameOrchestrator(engine, {"p1": agent_one, "p2": agent_two})

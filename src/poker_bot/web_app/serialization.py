@@ -3,7 +3,16 @@ from __future__ import annotations
 from typing import Any
 
 from poker_bot.players.rendering import render_events
-from poker_bot.types import DecisionRequest, GameEvent, GamePhase, PlayerView, PublicTableView, SeatSnapshot
+from poker_bot.types import (
+    DecisionRequest,
+    GameEvent,
+    GamePhase,
+    HandReplayRecord,
+    PlayerView,
+    PublicTableView,
+    ReplayFrame,
+    SeatSnapshot,
+)
 from poker_bot.web_app.player import WebPlayerAgent
 from poker_bot.web_app.session import WebShowdownState, WebTableSession, WebUserReservation
 
@@ -70,6 +79,7 @@ def serialize_table_snapshot(
     return {
         "status": session.status.value,
         "table_id": session.table_id,
+        "replay": None,
         "config_summary": {
             "total_seats": session.total_seats,
             "web_seats": session.web_seat_count,
@@ -96,9 +106,76 @@ def serialize_table_snapshot(
         "pending_decision": pending_decision,
         "seat_amount_badges": _serialize_seat_amount_badges(public_view, session.showdown_state),
         "recent_events": _serialize_recent_events(session),
+        "completed_hands": _serialize_completed_hands(session),
         "controls": _serialize_controls(session, viewer=viewer, has_pending_decision=pending_decision is not None),
         "message": session.status_message,
         "showdown": _serialize_showdown(session.showdown_state),
+    }
+
+
+def serialize_replay_snapshot(
+    session: WebTableSession,
+    replay_record: HandReplayRecord,
+    frame: ReplayFrame,
+    *,
+    seat_token: str | None,
+) -> dict[str, Any]:
+    viewer = session.find_reservation_by_token(seat_token)
+    viewer_seat_id = viewer.seat_id if viewer is not None else None
+    human_seat_ids = {user.seat_id for user in session.claimed_web_users}
+    public_table = _serialize_public_table(
+        frame.public_table_view,
+        human_seat_ids=human_seat_ids,
+        viewer_seat_id=viewer_seat_id,
+    )
+    return {
+        "status": session.status.value,
+        "table_id": session.table_id,
+        "replay": {
+            "active": True,
+            "hand_number": replay_record.hand_number,
+            "current_step": frame.step_index,
+            "total_steps": frame.total_steps,
+            "can_step_backward": frame.step_index > 0,
+            "can_step_forward": frame.step_index < frame.total_steps - 1,
+            "replay_path": f"/table/{session.table_id}/replay/{replay_record.hand_number}",
+        },
+        "config_summary": {
+            "total_seats": session.total_seats,
+            "web_seats": session.web_seat_count,
+            "claimed_web_seats": session.human_player_count,
+            "llm_seats": session.llm_seat_count,
+            "small_blind": session.request.small_blind,
+            "big_blind": session.request.big_blind,
+            "starting_stack": session.request.starting_stack,
+            "stack_depth": session.request.stack_depth,
+            "max_players": session.total_seats,
+            "max_hands_per_table": None,
+            "share_path": f"/table/{session.table_id}",
+        },
+        "waiting_players": [],
+        "public_table": public_table,
+        "player_view": _serialize_player_view(frame.player_view) if frame.player_view is not None else None,
+        "pending_decision": None,
+        "seat_amount_badges": _serialize_replay_seat_amount_badges(frame),
+        "recent_events": _serialize_replay_events(frame),
+        "completed_hands": _serialize_completed_hands(session),
+        "controls": {
+            "seat_token_valid": viewer is not None,
+            "viewer_name": viewer.display_name if viewer is not None else None,
+            "is_joined": viewer is not None,
+            "is_creator": viewer is not None and session.is_creator_token(viewer.seat_token),
+            "can_join": False,
+            "can_start": False,
+            "can_leave": False,
+            "can_cancel": False,
+            "can_act": False,
+            "can_request_coach": False,
+            "share_path": f"/table/{session.table_id}",
+            "join_disabled_reason": None,
+        },
+        "message": f"Replay for hand #{replay_record.hand_number}",
+        "showdown": _serialize_replay_showdown(frame),
     }
 
 
@@ -160,6 +237,32 @@ def _serialize_recent_events(session: WebTableSession) -> list[dict[str, Any]]:
     return [*session.activity_log, *game_events][-40:]
 
 
+def _serialize_replay_events(frame: ReplayFrame) -> list[dict[str, Any]]:
+    seat_names = {seat.seat_id: seat.name for seat in frame.public_table_view.seats}
+    return [
+        {
+            "id": f"replay-{index}",
+            "kind": _event_kind(event),
+            "event_type": event.event_type,
+            "text": render_events((event,), seat_names=seat_names),
+        }
+        for index, event in enumerate(frame.visible_events, start=1)
+    ][-40:]
+
+
+def _serialize_completed_hands(session: WebTableSession) -> list[dict[str, Any]]:
+    if session.orchestrator is None:
+        return []
+    return [
+        {
+            "hand_number": record.hand_number,
+            "ended_in_showdown": record.ended_in_showdown,
+            "replay_path": f"/table/{session.table_id}/replay/{record.hand_number}",
+        }
+        for record in reversed(session.orchestrator.completed_hands)
+    ]
+
+
 def _serialize_showdown(showdown: WebShowdownState | None) -> dict[str, Any] | None:
     if showdown is None:
         return None
@@ -171,6 +274,21 @@ def _serialize_showdown(showdown: WebShowdownState | None) -> dict[str, Any] | N
                 "hole_cards": list(seat.hole_cards),
             }
             for seat in showdown.revealed_seats
+        ],
+    }
+
+
+def _serialize_replay_showdown(frame: ReplayFrame) -> dict[str, Any] | None:
+    if not frame.revealed_seats:
+        return None
+    return {
+        "active": True,
+        "revealed_seats": [
+            {
+                "seat_id": seat_id,
+                "hole_cards": list(hole_cards),
+            }
+            for seat_id, hole_cards in frame.revealed_seats
         ],
     }
 
@@ -204,6 +322,34 @@ def _serialize_seat_amount_badges(
             "amount": seat.street_contribution,
         }
         for seat in public_view.seats
+        if seat.street_contribution > 0
+    ]
+
+
+def _serialize_replay_seat_amount_badges(frame: ReplayFrame) -> list[dict[str, Any]]:
+    if frame.winner_amounts:
+        return [
+            {
+                "seat_id": seat_id,
+                "amount": amount,
+            }
+            for seat_id, amount in frame.winner_amounts
+            if amount > 0
+        ]
+    if frame.public_table_view.phase not in {
+        GamePhase.PREFLOP,
+        GamePhase.FLOP,
+        GamePhase.TURN,
+        GamePhase.RIVER,
+        GamePhase.SHOWDOWN,
+    }:
+        return []
+    return [
+        {
+            "seat_id": seat.seat_id,
+            "amount": seat.street_contribution,
+        }
+        for seat in frame.public_table_view.seats
         if seat.street_contribution > 0
     ]
 

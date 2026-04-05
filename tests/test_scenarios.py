@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.base import PlayerAgent
-from poker_bot.poker.decks import PredefinedDeckFactory
+from poker_bot.poker.decks import DeckSequenceFactory
 from poker_bot.poker.engine import PokerEngine
 from poker_bot.types import ActionType, DecisionRequest, PlayerAction, PlayerUpdate, SeatConfig, TableConfig
 
@@ -51,7 +51,7 @@ def run_scenario(scenario: Scenario, *, max_hands: int | None = None) -> tuple[G
         TableConfig(
             small_blind=scenario.small_blind,
             big_blind=scenario.big_blind,
-            deck_factory=PredefinedDeckFactory(list(scenario.hands)),
+            deck_factory=DeckSequenceFactory(list(scenario.hands)),
         ),
         seats,
     )

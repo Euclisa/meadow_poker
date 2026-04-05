@@ -7,7 +7,7 @@ from typing import Any
 from poker_bot.coach import TableCoach
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.base import PlayerAgent
-from poker_bot.types import TelegramTableState
+from poker_bot.types import HandRecord, HandReplayRecord, TelegramTableState
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +70,7 @@ class WebTableSession:
     status_message: str = "Waiting for players."
     activity_log: list[dict[str, Any]] = field(default_factory=list)
     showdown_state: WebShowdownState | None = None
+    replay_records: dict[int, HandReplayRecord] = field(default_factory=dict)
     _activity_counter: int = 0
     _watchers: set[asyncio.Queue[str]] = field(default_factory=set)
 
@@ -156,3 +157,11 @@ class WebTableSession:
                 queue.put_nowait("update")
             except RuntimeError:
                 self._watchers.discard(queue)
+
+    def find_completed_hand(self, hand_number: int) -> HandRecord | None:
+        if self.orchestrator is None:
+            return None
+        return next(
+            (record for record in self.orchestrator.completed_hands if record.hand_number == hand_number),
+            None,
+        )

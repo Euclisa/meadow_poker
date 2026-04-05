@@ -40,6 +40,8 @@ class GameOrchestrator:
         self._current_hand_start_view = None
         self._current_hand_number: int | None = None
         self._current_hand_ended_in_showdown = False
+        self._current_hand_replay_seed = None
+        self._current_hand_replay_deck_order: str | None = None
 
         for seat_id in player_agents:
             engine.get_player_view(seat_id)
@@ -65,6 +67,8 @@ class GameOrchestrator:
             start_public_view=self._current_hand_start_view,
             current_public_view=self.engine.get_public_table_view(),
             ended_in_showdown=self._current_hand_ended_in_showdown,
+            replay_seed=self._current_hand_replay_seed,
+            replay_deck_order=self._current_hand_replay_deck_order,
         )
 
     async def play_hand(self) -> HandRunResult:
@@ -221,6 +225,8 @@ class GameOrchestrator:
         self._current_hand_start_view = public_view
         self._current_hand_number = public_view.hand_number
         self._current_hand_ended_in_showdown = False
+        self._current_hand_replay_seed = self.engine.export_hand_replay_seed()
+        self._current_hand_replay_deck_order = self.engine.export_remaining_deck_order()
 
     def _finalize_current_hand(self) -> HandRecord | None:
         if (
@@ -236,10 +242,14 @@ class GameOrchestrator:
             start_public_view=self._current_hand_start_view,
             current_public_view=self.engine.get_public_table_view(),
             ended_in_showdown=self._current_hand_ended_in_showdown,
+            replay_seed=self._current_hand_replay_seed,
+            replay_deck_order=self._current_hand_replay_deck_order,
         )
         self.completed_hands.append(record)
         self._current_hand_event_index = None
         self._current_hand_start_view = None
         self._current_hand_number = None
         self._current_hand_ended_in_showdown = False
+        self._current_hand_replay_seed = None
+        self._current_hand_replay_deck_order = None
         return record

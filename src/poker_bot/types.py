@@ -168,6 +168,8 @@ class HandRecord:
     start_public_view: PublicTableView
     current_public_view: PublicTableView
     ended_in_showdown: bool
+    replay_seed: "HandReplaySeed | None" = None
+    replay_deck_order: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +188,68 @@ class ActionResult:
     error: ActionValidationError | None = None
     events: tuple[GameEvent, ...] = ()
     state_changed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaySeatState:
+    seat_id: str
+    name: str
+    stack: int
+    hole_cards: tuple[str, ...]
+    folded: bool
+    all_in: bool
+    in_hand: bool
+    committed_this_street: int
+    committed_this_hand: int
+    has_acted_this_round: bool
+    last_action_bet_level: int
+    position: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class HandReplaySeed:
+    hand_number: int
+    phase: GamePhase
+    board_cards: tuple[str, ...]
+    current_bet: int
+    last_full_raise_amount: int
+    last_full_raise_to: int
+    dealer_seat_id: str | None
+    acting_seat_id: str | None
+    small_blind_seat_id: str | None
+    big_blind_seat_id: str | None
+    small_blind: int
+    big_blind: int
+    seats: tuple[ReplaySeatState, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayAction:
+    seat_id: str
+    action: PlayerAction
+
+
+@dataclass(frozen=True, slots=True)
+class HandReplayRecord:
+    hand_number: int
+    seed: HandReplaySeed
+    deck_order: str
+    bootstrap_events: tuple[GameEvent, ...]
+    actions: tuple[ReplayAction, ...]
+    ended_in_showdown: bool
+    total_steps: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayFrame:
+    step_index: int
+    total_steps: int
+    public_table_view: PublicTableView
+    player_view: PlayerView | None
+    visible_events: tuple[GameEvent, ...]
+    focused_events: tuple[GameEvent, ...]
+    revealed_seats: tuple[tuple[str, tuple[str, str]], ...]
+    winner_amounts: tuple[tuple[str, int], ...]
 
 
 @dataclass(frozen=True, slots=True)

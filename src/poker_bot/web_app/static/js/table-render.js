@@ -29,18 +29,21 @@ export function renderStatusMarkup(snapshot, {
   if (!snapshot) {
     return `<div class="panel panel--wide loading-card">Loading table...</div>`;
   }
+  const replay = snapshot.replay;
 
   return `
     <main class="app-shell app-shell--table">
       <section class="table-header-card table-header-card--compact">
         <div>
-          <p class="eyebrow">Table ${escapeHtml(snapshot.table_id)}</p>
+          <p class="eyebrow">${replay?.active ? `Replay · Hand #${escapeHtml(replay.hand_number)}` : `Table ${escapeHtml(snapshot.table_id)}`}</p>
           <h1>${escapeHtml(snapshot.message || "Poker table")}</h1>
         </div>
         <div class="table-header-card__badges">
           <span class="status-pill">${prettyStatusLabel(snapshot.status)}</span>
-          <span class="chip chip--soft">/${escapeHtml(snapshot.table_id)}</span>
-          <button class="button button--ghost" id="copy-share-link" type="button">Copy share link</button>
+          <span class="chip chip--soft">${replay?.active ? `step ${replay.current_step + 1}/${replay.total_steps}` : `/${escapeHtml(snapshot.table_id)}`}</span>
+          ${replay?.active
+            ? `<a class="button button--ghost" href="/table/${escapeHtml(snapshot.table_id)}">Back to table</a>`
+            : `<button class="button button--ghost" id="copy-share-link" type="button">Copy share link</button>`}
         </div>
       </section>
 
@@ -53,6 +56,7 @@ export function renderStatusMarkup(snapshot, {
       ${renderPlayWindow(snapshot, { joinName, busy, coachPending, actionAmount })}
       ${renderCoachBubble({ coachReply, coachVisible, coachPending })}
       ${renderHistoryStrip(snapshot)}
+      ${renderCompletedHands(snapshot)}
     </main>
   `;
 }
@@ -207,6 +211,9 @@ function renderSeatAmountBadge(seatAmountBadge, { side }) {
 }
 
 function renderToolbar(snapshot, { joinName = "", busy = false, coachPending = false, actionAmount = "" } = {}) {
+  if (snapshot.replay?.active) {
+    return renderReplayToolbar(snapshot);
+  }
   const controls = snapshot.controls;
   const summary = snapshot.config_summary;
   const pendingDecision = snapshot.pending_decision;
@@ -312,6 +319,26 @@ function renderToolbar(snapshot, { joinName = "", busy = false, coachPending = f
   `;
 }
 
+function renderReplayToolbar(snapshot) {
+  const replay = snapshot.replay;
+  return `
+    <section class="panel panel--toolbar replay-toolbar">
+      <div class="toolbar__summary">
+        <span class="chip">Hand ${replay.hand_number}</span>
+        <span class="chip chip--soft">Step ${replay.current_step + 1}/${replay.total_steps}</span>
+        <span class="chip chip--soft">${formatChips(snapshot.config_summary.small_blind)} / ${formatChips(snapshot.config_summary.big_blind)}</span>
+      </div>
+      <div class="replay-toolbar__controls">
+        <button class="button button--ghost" id="replay-first-step" type="button" ${replay.can_step_backward ? "" : "disabled"}>&laquo;</button>
+        <button class="button button--ghost" id="replay-prev-step" type="button" ${replay.can_step_backward ? "" : "disabled"}>&larr;</button>
+        <span class="replay-toolbar__label">Use the arrows to walk the hand.</span>
+        <button class="button button--ghost" id="replay-next-step" type="button" ${replay.can_step_forward ? "" : "disabled"}>&rarr;</button>
+        <button class="button button--ghost" id="replay-last-step" type="button" ${replay.can_step_forward ? "" : "disabled"}>&raquo;</button>
+      </div>
+    </section>
+  `;
+}
+
 function renderCoachBubble({ coachReply = "", coachVisible = false, coachPending = false } = {}) {
   if (!coachVisible && !coachPending) {
     return "";
@@ -331,7 +358,7 @@ function renderHistoryStrip(snapshot) {
   const events = (snapshot.recent_events ?? []).slice(-12).reverse();
   return `
     <section class="panel panel--history">
-      <span class="history-strip__label">Recent</span>
+      <span class="history-strip__label">${snapshot.replay?.active ? "Replay timeline" : "Recent"}</span>
       <div class="history-strip__list">
         ${
           events.length === 0
@@ -346,6 +373,30 @@ function renderHistoryStrip(snapshot) {
                 )
                 .join("")
         }
+      </div>
+    </section>
+  `;
+}
+
+function renderCompletedHands(snapshot) {
+  const hands = snapshot.completed_hands ?? [];
+  if (hands.length === 0 || snapshot.replay?.active) {
+    return "";
+  }
+  return `
+    <section class="panel panel--history panel--completed-hands">
+      <span class="history-strip__label">Completed hands</span>
+      <div class="completed-hands__list">
+        ${hands
+          .map(
+            (hand) => `
+              <a class="completed-hands__item" href="${escapeHtml(hand.replay_path)}" target="_blank" rel="noreferrer">
+                <span>Hand #${escapeHtml(hand.hand_number)}</span>
+                <span class="chip chip--soft">${hand.ended_in_showdown ? "showdown" : "no showdown"}</span>
+              </a>
+            `,
+          )
+          .join("")}
       </div>
     </section>
   `;

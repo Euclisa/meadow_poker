@@ -13,11 +13,12 @@ from poker_bot.naming import BotNameAllocator
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
 from poker_bot.poker.engine import PokerEngine
+from poker_bot.replay import HandReplayBuildError, HandReplaySession, build_hand_replay_record
 from poker_bot.table_runner import run_table
 from poker_bot.types import ActionType, PlayerAction, PlayerUpdate, PlayerUpdateType, SeatConfig, TableConfig, TelegramTableState
 from poker_bot.web_app.player import WebPlayerAgent
 from poker_bot.web_app.registry import WebTableRegistry
-from poker_bot.web_app.serialization import serialize_lobby, serialize_table_snapshot
+from poker_bot.web_app.serialization import serialize_lobby, serialize_replay_snapshot, serialize_table_snapshot
 from poker_bot.web_app.session import (
     WebShowdownReveal,
     WebShowdownState,
@@ -70,6 +71,7 @@ class WebApp:
         app = web.Application()
         app.router.add_get("/", self.handle_lobby_page)
         app.router.add_get("/table/{table_id}", self.handle_table_page)
+        app.router.add_get("/table/{table_id}/replay/{hand_number}", self.handle_replay_page)
         app.router.add_get("/api/lobby", self.handle_lobby_state)
         app.router.add_get("/api/lobby/stream", self.handle_lobby_stream)
         app.router.add_post("/api/tables", self.handle_create_table)
@@ -80,6 +82,7 @@ class WebApp:
         app.router.add_post("/api/tables/{table_id}/action", self.handle_submit_action)
         app.router.add_post("/api/tables/{table_id}/coach", self.handle_request_coach)
         app.router.add_get("/api/tables/{table_id}/state", self.handle_table_state)
+        app.router.add_get("/api/tables/{table_id}/replay/{hand_number}", self.handle_replay_state)
         app.router.add_get("/api/tables/{table_id}/stream", self.handle_table_stream)
         app.router.add_static("/static", _STATIC_DIR)
         return app
@@ -113,6 +116,24 @@ class WebApp:
             title=f"Table {table_id}",
             body_attributes=f'data-page="table" data-table-id="{table_id}"',
             script_name="table.js",
+        )
+
+    async def handle_replay_page(self, request: Any) -> Any:
+        table_id = request.match_info["table_id"]
+        hand_number = request.match_info["hand_number"]
+        session = self.registry.get_table(table_id)
+        if session is None:
+            raise self._require_aiohttp().HTTPNotFound(text="Table not found.")
+        parsed_hand_number = self._parse_int(hand_number)
+        if parsed_hand_number is None or session.find_completed_hand(parsed_hand_number) is None:
+            raise self._require_aiohttp().HTTPNotFound(text="Completed hand not found.")
+        return self._html_response(
+            title=f"Replay Hand {hand_number}",
+            body_attributes=(
+                f'data-page="replay" data-table-id="{table_id}" '
+                f'data-hand-number="{hand_number}"'
+            ),
+            script_name="replay.js",
         )
 
     async def handle_lobby_state(self, request: Any) -> Any:
@@ -344,6 +365,49 @@ class WebApp:
             return self._error_response(str(exc), status=403)
 
         return self._json_response(self._snapshot(session, seat_token=authorized_token))
+
+    async def handle_replay_state(self, request: Any) -> Any:
+        table_id = request.match_info["table_id"]
+        hand_number = self._parse_int(request.match_info["hand_number"])
+        seat_token = self._normalize_token(request.query.get("seat_token"))
+        step_index = self._parse_int(request.query.get("step")) or 0
+        try:
+            session = self._require_table(table_id)
+            authorized_token = self._authorize_view(session, seat_token)
+        except KeyError:
+            return self._error_response("Table not found.", status=404)
+        except PermissionError as exc:
+            return self._error_response(str(exc), status=403)
+        if hand_number is None:
+            return self._error_response("Invalid hand number.", status=400)
+
+        record = session.find_completed_hand(hand_number)
+        if record is None:
+            return self._error_response("Completed hand not found.", status=404)
+        try:
+            replay_record = session.replay_records.get(hand_number)
+            if replay_record is None:
+                replay_record = build_hand_replay_record(record)
+                session.replay_records[hand_number] = replay_record
+            viewer = session.find_reservation_by_token(authorized_token)
+            replay_session = HandReplaySession(
+                replay_record,
+                viewer_seat_id=viewer.seat_id if viewer is not None else None,
+            )
+            frame = replay_session.materialize(step_index)
+        except HandReplayBuildError as exc:
+            logger.warning("Replay build failed table=%s hand=%s error=%s", table_id, hand_number, exc)
+            return self._error_response("Replay could not be built for this hand.", status=500)
+        except IndexError:
+            return self._error_response("Replay step is out of range.", status=400)
+        return self._json_response(
+            serialize_replay_snapshot(
+                session,
+                replay_record,
+                frame,
+                seat_token=authorized_token,
+            )
+        )
 
     async def handle_table_stream(self, request: Any) -> Any:
         table_id = request.match_info["table_id"]

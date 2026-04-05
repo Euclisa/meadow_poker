@@ -5,7 +5,14 @@ import logging
 from typing import Iterable
 
 from poker_bot.poker.cards import best_hand_details, best_hand_rank
-from poker_bot.poker.decks import Deck, DeckExhaustedError, NoMoreDecksError, RandomDeckFactory
+from poker_bot.poker.decks import (
+    Deck,
+    DeckExhaustedError,
+    NoMoreDecksError,
+    OrderedDeckFactory,
+    ShuffledDeckFactory,
+    encode_card_order,
+)
 from poker_bot.types import (
     ActionResult,
     ActionType,
@@ -13,10 +20,12 @@ from poker_bot.types import (
     DecisionRequest,
     GameEvent,
     GamePhase,
+    HandReplaySeed,
     LegalAction,
     PlayerAction,
     PlayerView,
     PublicTableView,
+    ReplaySeatState,
     SeatConfig,
     SeatSnapshot,
     TableConfig,
@@ -78,7 +87,7 @@ class PokerEngine:
         self._acting_index: int | None = None
         self._small_blind_index: int | None = None
         self._big_blind_index: int | None = None
-        self._deck_factory = config.deck_factory or RandomDeckFactory()
+        self._deck_factory = config.deck_factory or ShuffledDeckFactory()
         self._deck: Deck | None = None
         self._board_cards: list[str] = []
         self._current_bet = 0
@@ -88,6 +97,49 @@ class PokerEngine:
     @classmethod
     def create_table(cls, config: TableConfig, seats: Iterable[SeatConfig]) -> "PokerEngine":
         return cls(config=config, seats=seats)
+
+    @classmethod
+    def from_hand_replay_seed(cls, seed: HandReplaySeed, deck_order: str) -> "PokerEngine":
+        seats = [
+            SeatConfig(seat_id=seat.seat_id, name=seat.name, starting_stack=max(1, seat.stack))
+            for seat in seed.seats
+        ]
+        engine = cls(
+            config=TableConfig(
+                small_blind=seed.small_blind,
+                big_blind=seed.big_blind,
+                starting_stack=1,
+                min_players=2,
+                max_players=max(2, len(seats)),
+                deck_factory=OrderedDeckFactory(deck_order),
+            ),
+            seats=seats,
+        )
+        engine._phase = seed.phase
+        engine._hand_number = seed.hand_number
+        engine._board_cards = list(seed.board_cards)
+        engine._current_bet = seed.current_bet
+        engine._last_full_raise_amount = seed.last_full_raise_amount
+        engine._last_full_raise_to = seed.last_full_raise_to
+        engine._dealer_index = engine._index_of_optional_seat(seed.dealer_seat_id, default=-1)
+        engine._acting_index = engine._index_of_optional_seat(seed.acting_seat_id)
+        engine._small_blind_index = engine._index_of_optional_seat(seed.small_blind_seat_id)
+        engine._big_blind_index = engine._index_of_optional_seat(seed.big_blind_seat_id)
+        engine._deck = OrderedDeckFactory(deck_order).create_hand_deck(seed.hand_number)
+
+        for replay_seat in seed.seats:
+            seat = engine._require_seat(replay_seat.seat_id)
+            seat.stack = replay_seat.stack
+            seat.hole_cards = list(replay_seat.hole_cards)
+            seat.folded = replay_seat.folded
+            seat.all_in = replay_seat.all_in
+            seat.in_hand = replay_seat.in_hand
+            seat.committed_this_street = replay_seat.committed_this_street
+            seat.committed_this_hand = replay_seat.committed_this_hand
+            seat.has_acted_this_round = replay_seat.has_acted_this_round
+            seat.last_action_bet_level = replay_seat.last_action_bet_level
+            seat.position = replay_seat.position
+        return engine
 
     def get_phase(self) -> GamePhase:
         return self._phase
@@ -123,6 +175,37 @@ class PokerEngine:
             to_call=max(0, self._current_bet - seat.committed_this_street),
             public_table=self.get_public_table_view(),
         )
+
+    def export_hand_replay_seed(self) -> HandReplaySeed:
+        if self._phase not in {
+            GamePhase.PREFLOP,
+            GamePhase.FLOP,
+            GamePhase.TURN,
+            GamePhase.RIVER,
+            GamePhase.SHOWDOWN,
+            GamePhase.HAND_COMPLETE,
+        }:
+            raise RuntimeError("Replay seeds can only be exported for an active or completed hand")
+        return HandReplaySeed(
+            hand_number=self._hand_number,
+            phase=self._phase,
+            board_cards=tuple(self._board_cards),
+            current_bet=self._current_bet,
+            last_full_raise_amount=self._last_full_raise_amount,
+            last_full_raise_to=self._last_full_raise_to,
+            dealer_seat_id=self._seat_id_or_none(self._dealer_index),
+            acting_seat_id=self.get_acting_seat(),
+            small_blind_seat_id=self._seat_id_or_none(self._small_blind_index),
+            big_blind_seat_id=self._seat_id_or_none(self._big_blind_index),
+            small_blind=self.config.small_blind,
+            big_blind=self.config.big_blind,
+            seats=tuple(self._replay_seat_state(seat) for seat in self._seats),
+        )
+
+    def export_remaining_deck_order(self) -> str:
+        if self._deck is None:
+            raise RuntimeError("Hand deck has not been initialized")
+        return encode_card_order(self._deck.card_order())
 
     def get_decision_request(
         self,
@@ -748,10 +831,31 @@ class PokerEngine:
             street_contribution=seat.committed_this_street,
         )
 
+    def _replay_seat_state(self, seat: _SeatState) -> ReplaySeatState:
+        return ReplaySeatState(
+            seat_id=seat.seat_id,
+            name=seat.name,
+            stack=seat.stack,
+            hole_cards=tuple(seat.hole_cards),
+            folded=seat.folded,
+            all_in=seat.all_in,
+            in_hand=seat.in_hand,
+            committed_this_street=seat.committed_this_street,
+            committed_this_hand=seat.committed_this_hand,
+            has_acted_this_round=seat.has_acted_this_round,
+            last_action_bet_level=seat.last_action_bet_level,
+            position=seat.position,
+        )
+
     def _seat_id_or_none(self, index: int | None) -> str | None:
         if index is None:
             return None
         return self._seats[index].seat_id
+
+    def _index_of_optional_seat(self, seat_id: str | None, *, default: int | None = None) -> int | None:
+        if seat_id is None:
+            return default
+        return self._index_of_seat(seat_id)
 
     def _index_of_seat(self, seat_id: str) -> int:
         for index, seat in enumerate(self._seats):

@@ -1,7 +1,7 @@
 import pytest
 
 from poker_bot.poker.cards import best_hand_details, best_hand_rank, rank_five_cards
-from poker_bot.poker.decks import PredefinedDeckFactory
+from poker_bot.poker.decks import DeckSequenceFactory
 from poker_bot.poker.engine import PokerEngine
 from poker_bot.types import ActionType, GamePhase, PlayerAction, SeatConfig, TableConfig
 
@@ -21,7 +21,7 @@ def make_engine(
         TableConfig(
             small_blind=small_blind,
             big_blind=big_blind,
-            deck_factory=PredefinedDeckFactory([deck]),
+            deck_factory=DeckSequenceFactory([deck]),
         ),
         seats,
     )
@@ -178,7 +178,7 @@ def test_showdown_reveals_only_live_non_folded_players() -> None:
 def test_scripted_deck_factory_ends_table_cleanly_when_out_of_hands() -> None:
     engine = PokerEngine.create_table(
         TableConfig(
-            deck_factory=PredefinedDeckFactory(
+            deck_factory=DeckSequenceFactory(
                 [
                     ("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"),
                 ]
@@ -421,7 +421,7 @@ def test_chip_conservation_across_hands() -> None:
     deck1 = ("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc")
     deck2 = ("Qs", "Jh", "Qd", "Jd", "2h", "3c", "4d", "5s", "6c")
     engine = PokerEngine.create_table(
-        TableConfig(deck_factory=PredefinedDeckFactory([deck1, deck2])),
+        TableConfig(deck_factory=DeckSequenceFactory([deck1, deck2])),
         [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
     )
     initial_total = sum(s.stack for s in engine.get_public_table_view().seats)
@@ -488,7 +488,7 @@ def test_action_rejected_when_hand_not_in_progress() -> None:
 def test_deck_exhaustion_during_deal_refunds_blinds() -> None:
     # Only 3 cards — enough for blinds but not for dealing hole cards
     engine = PokerEngine.create_table(
-        TableConfig(deck_factory=PredefinedDeckFactory([("As", "Kh", "Qd")])),
+        TableConfig(deck_factory=DeckSequenceFactory([("As", "Kh", "Qd")])),
         [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
     )
     initial_total = sum(s.stack for s in engine.get_public_table_view().seats)

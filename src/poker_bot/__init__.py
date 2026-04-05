@@ -13,8 +13,16 @@ from poker_bot.config import (
     load_project_config,
 )
 from poker_bot.orchestrator import GameOrchestrator
-from poker_bot.poker.decks import PredefinedDeck, PredefinedDeckFactory, RandomDeck, RandomDeckFactory
+from poker_bot.poker.decks import (
+    DeckSequenceFactory,
+    OrderedDeck,
+    OrderedDeckFactory,
+    ShuffledDeckFactory,
+    decode_card_order,
+    encode_card_order,
+)
 from poker_bot.poker.engine import PokerEngine
+from poker_bot.replay import HandReplayBuildError, HandReplaySession, build_hand_replay_record
 from poker_bot.telegram_app import TelegramActionRouter, TelegramApp, TelegramAppConfig, TelegramTableRegistry, TelegramTableSession
 from poker_bot.web_app import WebApp, WebAppConfig, WebPlayerAgent, WebTableRegistry, WebTableSession
 from poker_bot.types import (
@@ -25,12 +33,17 @@ from poker_bot.types import (
     GameEvent,
     GamePhase,
     HandRecord,
+    HandReplayRecord,
+    HandReplaySeed,
     HandRecordStatus,
     HandRunResult,
     LegalAction,
     PlayerAction,
     PlayerView,
     PublicTableView,
+    ReplayAction,
+    ReplayFrame,
+    ReplaySeatState,
     SeatConfig,
     TableConfig,
     TelegramPendingActionState,
@@ -51,21 +64,24 @@ __all__ = [
     "GameOrchestrator",
     "GamePhase",
     "HandRecord",
+    "HandReplayBuildError",
+    "HandReplayRecord",
+    "HandReplaySeed",
+    "HandReplaySession",
     "HandRecordStatus",
     "HandRunResult",
     "LegalAction",
     "LLMProviderSettings",
     "LLMSettings",
     "OpenRouterSettings",
-    "PredefinedDeck",
-    "PredefinedDeckFactory",
     "PlayerAction",
     "PlayerView",
     "PokerEngine",
     "ProjectConfig",
     "PublicTableView",
-    "RandomDeck",
-    "RandomDeckFactory",
+    "ReplayAction",
+    "ReplayFrame",
+    "ReplaySeatState",
     "SeatConfig",
     "TableConfig",
     "TelegramSettings",
@@ -84,5 +100,12 @@ __all__ = [
     "WebSettings",
     "WebTableRegistry",
     "WebTableSession",
+    "DeckSequenceFactory",
+    "OrderedDeck",
+    "OrderedDeckFactory",
+    "ShuffledDeckFactory",
+    "build_hand_replay_record",
+    "decode_card_order",
+    "encode_card_order",
     "load_project_config",
 ]
