@@ -402,7 +402,7 @@ function renderHistoryStrip(snapshot) {
                 .map(
                   (event) => `
                     <span class="history-line history-line--${escapeHtml(event.kind || "state")}">
-                      ${escapeHtml(compactEventText(event.text))}
+                      ${compactEventText(event.text)}
                     </span>
                   `,
                 )

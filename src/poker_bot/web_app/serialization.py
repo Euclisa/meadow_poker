@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from html import escape
 from typing import Any
 
-from poker_bot.players.rendering import render_events
+
 from poker_bot.replay import replay_next_transition
 from poker_bot.types import (
     DecisionRequest,
@@ -274,29 +275,41 @@ def _serialize_recent_events(session: WebTableSession) -> list[dict[str, Any]]:
     game_events = []
     if session.orchestrator is not None:
         for index, event in enumerate(session.orchestrator.event_log, start=1):
+            text = _render_event_html(event, seat_names=seat_names)
+            if not text:
+                continue
             game_events.append(
                 {
                     "id": f"game-{index}",
                     "kind": _event_kind(event),
                     "event_type": event.event_type,
-                    "text": render_events((event,), seat_names=seat_names),
+                    "text": text,
                 }
             )
 
-    return [*session.activity_log, *game_events][-40:]
+    activity = [
+        {**entry, "text": escape(entry["text"])}
+        for entry in session.activity_log
+    ]
+    return [*activity, *game_events][-40:]
 
 
 def _serialize_replay_events(frame: ReplayFrame) -> list[dict[str, Any]]:
     seat_names = {seat.seat_id: seat.name for seat in frame.public_table_view.seats}
-    return [
-        {
-            "id": f"replay-{index}",
-            "kind": _event_kind(event),
-            "event_type": event.event_type,
-            "text": render_events((event,), seat_names=seat_names),
-        }
-        for index, event in enumerate(frame.visible_events, start=1)
-    ][-40:]
+    result = []
+    for index, event in enumerate(frame.visible_events, start=1):
+        text = _render_event_html(event, seat_names=seat_names)
+        if not text:
+            continue
+        result.append(
+            {
+                "id": f"replay-{index}",
+                "kind": _event_kind(event),
+                "event_type": event.event_type,
+                "text": text,
+            }
+        )
+    return result[-40:]
 
 
 def _serialize_completed_hands(session: WebTableSession) -> list[dict[str, Any]]:
@@ -424,6 +437,51 @@ def _serialize_replay_action(
         "amount": amount,
         "label": label,
     }
+
+
+def _render_event_html(event: GameEvent, *, seat_names: dict[str, str] | None = None) -> str | None:
+    payload = event.payload
+    seat_id = payload.get("seat_id")
+    raw_name = seat_id if seat_names is None or seat_id is None else seat_names.get(seat_id, seat_id)
+    name = f"<b>{escape(raw_name)}</b>" if raw_name else "unknown"
+
+    if event.event_type == "action_applied":
+        amount = payload.get("amount")
+        action = escape(payload["action"])
+        if amount is None:
+            return f"{name} {action}"
+        return f"{name} {action} {amount}"
+    if event.event_type == "blind_posted":
+        return f"{name} {escape(payload['blind'])} blind {payload['amount']}"
+    if event.event_type == "street_started":
+        phase = escape(payload["phase"].replace("_", " ").title())
+        board_cards = payload.get("board_cards", ())
+        board = " ".join(board_cards) if board_cards else None
+        if board:
+            return f"<b>{phase}</b>: {escape(board)}"
+        return f"<b>{phase}</b>"
+    if event.event_type == "pot_awarded":
+        return f"{name} won {payload['amount']}"
+    if event.event_type == "hand_awarded":
+        return f"{name} collected {payload['amount']}"
+    if event.event_type == "hand_started":
+        return f"Hand <b>{payload['hand_number']}</b>"
+    if event.event_type == "hand_completed":
+        return f"Hand <b>{payload['hand_number']}</b> complete"
+    if event.event_type == "showdown_started":
+        board_cards = payload.get("board_cards", ())
+        board = " ".join(board_cards) if board_cards else "-"
+        return f"<b>Showdown</b>: {escape(board)}"
+    if event.event_type == "showdown_revealed":
+        cards = escape(" ".join(payload.get("hole_cards", ())) or "-")
+        hand_label = escape(payload["hand_label"])
+        return f"{name} showed {cards} <i>({hand_label})</i>"
+    if event.event_type == "table_completed":
+        reason = escape(payload.get("reason", "unknown").replace("_", " "))
+        return f"Table finished <i>({reason})</i>"
+    if event.event_type == "chips_refunded":
+        return f"{name} refunded {payload['amount']}"
+    return None
 
 
 def _event_kind(event: GameEvent) -> str:

@@ -704,8 +704,8 @@
 }
 
 .history-line {
-  display: inline-flex;
-  align-items: center;
+  display: inline-block;
+  vertical-align: middle;
   min-height: 1.6rem;
   padding: 0.24rem 0.48rem;
   border-radius: 999px;

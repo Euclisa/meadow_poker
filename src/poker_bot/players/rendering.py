@@ -21,7 +21,8 @@ def render_events(
 ) -> str:
     if not events:
         return "No new events."
-    return "\n".join(_render_event(event, seat_names=seat_names) for event in events)
+    lines = [_render_event(event, seat_names=seat_names) for event in events]
+    return "\n".join(line for line in lines if line is not None)
 
 
 def render_decision_summary(
@@ -254,7 +255,7 @@ def _render_legal_action(action: LegalAction) -> str:
     return action.action_type.value
 
 
-def _render_event(event: GameEvent, *, seat_names: dict[str, str] | None = None) -> str:
+def _render_event(event: GameEvent, *, seat_names: dict[str, str] | None = None) -> str | None:
     payload = event.payload
     name = _seat_label(payload.get("seat_id"), seat_names)
     if event.event_type == "action_applied":
@@ -285,7 +286,7 @@ def _render_event(event: GameEvent, *, seat_names: dict[str, str] | None = None)
         return f"Table completed ({payload.get('reason', 'unknown')})"
     if event.event_type == "chips_refunded":
         return f"{name} refunded {payload['amount']}"
-    return f"{event.event_type}: {payload}"
+    return None
 
 
 def _seat_label(seat_id: str | None, seat_names: dict[str, str] | None) -> str:
