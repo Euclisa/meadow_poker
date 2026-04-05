@@ -11,6 +11,12 @@ const state = {
   seatToken: loadSeatToken(tableId),
   step: 0,
   busy: false,
+  coachPending: false,
+  coachReply: "",
+  coachVisible: false,
+  coachAbortController: null,
+  coachRequestToken: 0,
+  coachStepKey: "",
   flash: "",
   flashTone: "info",
 };
@@ -21,6 +27,9 @@ function render() {
   const html = renderStatusMarkup(state.snapshot, {
     flash: state.flash,
     flashTone: state.flashTone,
+    coachPending: state.coachPending,
+    coachReply: state.coachReply,
+    coachVisible: state.coachVisible,
   });
   if (initialized) {
     morph(appRoot, html);
@@ -62,12 +71,25 @@ function bindDelegatedEvents() {
     }
     if (target.id === "replay-last-step") {
       loadReplayStep(state.snapshot.replay.total_steps - 1);
+      return;
+    }
+    if (target.id === "coach-button") {
+      requestReplayCoach();
+      return;
+    }
+    if (target.id === "coach-bubble-close") {
+      cancelReplayCoachRequest();
+      state.coachVisible = false;
+      render();
     }
   });
 }
 
 async function loadReplayStep(step) {
   clearFlash();
+  cancelReplayCoachRequest();
+  state.coachVisible = false;
+  state.coachReply = "";
   state.busy = true;
   render();
   try {
@@ -84,6 +106,66 @@ async function loadReplayStep(step) {
     state.busy = false;
     setFlash(error.message, "error");
   }
+}
+
+async function requestReplayCoach() {
+  if (!state.snapshot?.controls?.can_request_coach || state.coachPending) {
+    return;
+  }
+  clearFlash();
+  cancelReplayCoachRequest();
+  state.coachPending = true;
+  state.coachReply = "";
+  state.coachVisible = false;
+  state.coachRequestToken += 1;
+  const requestToken = state.coachRequestToken;
+  state.coachStepKey = currentReplayStepKey(state.snapshot);
+  state.coachAbortController = new AbortController();
+  render();
+
+  try {
+    const payload = await requestJson(`/api/tables/${tableId}/replay/${handNumber}/coach`, {
+      method: "POST",
+      body: JSON.stringify({
+        seat_token: state.seatToken,
+        step: state.step,
+      }),
+      signal: state.coachAbortController.signal,
+    });
+    if (requestToken !== state.coachRequestToken) {
+      return;
+    }
+    if (currentReplayStepKey(state.snapshot) !== state.coachStepKey) {
+      return;
+    }
+    state.coachReply = payload.reply ?? "";
+    state.coachVisible = Boolean(state.coachReply);
+    state.coachPending = false;
+    state.coachAbortController = null;
+    render();
+  } catch (error) {
+    if (error.name === "AbortError") {
+      return;
+    }
+    state.coachPending = false;
+    state.coachAbortController = null;
+    setFlash(error.message, "error");
+  }
+}
+
+function cancelReplayCoachRequest() {
+  if (state.coachAbortController) {
+    state.coachAbortController.abort();
+  }
+  state.coachAbortController = null;
+  state.coachPending = false;
+  state.coachRequestToken += 1;
+}
+
+function currentReplayStepKey(snapshot) {
+  const replayHandNumber = snapshot?.replay?.hand_number ?? handNumber;
+  const step = snapshot?.replay?.current_step ?? state.step;
+  return `${replayHandNumber}:${step}`;
 }
 
 loadReplayStep(0);

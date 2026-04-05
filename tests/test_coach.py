@@ -14,7 +14,9 @@ from poker_bot.types import (
     GamePhase,
     HandRecord,
     HandRecordStatus,
+    HandTransition,
     LegalAction,
+    PlayerAction,
     PlayerView,
     PublicTableView,
     SeatSnapshot,
@@ -174,3 +176,74 @@ def test_table_coach_updates_public_note_and_advice_prompt_uses_only_note(caplog
     assert "Hand #1" not in advice_prompt
     assert "Hand #2" not in advice_prompt
     assert any("reply=Call looks fine here." in record.getMessage() for record in caplog.records)
+
+
+def test_table_coach_tracks_historical_note_revisions_without_duplication() -> None:
+    client = RecordingOpenAIClient(["Public note v1", "Public note v1", "Public note v2"])
+    coach = TableCoach(
+        LLMGameClient(
+            settings=CoachSettings(enabled=True, model="gpt-test", api_key="test"),
+            client=client,
+        ),
+        recent_hand_count=2,
+    )
+
+    async def scenario() -> None:
+        await coach.record_completed_hand(_make_completed_record(1))
+        await coach.record_completed_hand(_make_completed_record(2))
+        await coach.record_completed_hand(_make_completed_record(3))
+        await coach.record_completed_hand(_make_completed_record(4))
+        await coach.record_completed_hand(_make_completed_record(5))
+        await coach.record_completed_hand(_make_completed_record(6))
+
+    asyncio.run(scenario())
+
+    assert coach.public_note_for_replay_hand(1) is None
+    assert coach.public_note_for_replay_hand(3) == "Public note v1"
+    assert coach.public_note_for_replay_hand(4) == "Public note v1"
+    assert coach.public_note_for_replay_hand(5) == "Public note v1"
+    assert coach.public_note_for_replay_hand(7) == "Public note v2"
+    assert len(coach.public_note_history) == 2
+    assert coach.public_note_history[0].effective_from_hand_number == 3
+    assert coach.public_note_history[1].effective_from_hand_number == 7
+
+
+def test_table_coach_replay_prompt_uses_historical_note_and_recorded_action() -> None:
+    client = RecordingOpenAIClient(["Public note v1", "Replay reply"])
+    coach = TableCoach(
+        LLMGameClient(
+            settings=CoachSettings(enabled=True, model="gpt-test", api_key="test"),
+            client=client,
+        ),
+        recent_hand_count=2,
+    )
+
+    async def scenario() -> str:
+        await coach.record_completed_hand(_make_completed_record(1))
+        await coach.record_completed_hand(_make_completed_record(2))
+        return await coach.analyze_replay_spot(
+            table_id="table-1",
+            seat_id="p1",
+            decision=_make_decision(),
+            replay_hand_summary="Hand #3\nStatus: flop\n\nHero called preflop.",
+            next_transition=HandTransition(
+                kind="action",
+                seat_id="p1",
+                action=PlayerAction(ActionType.CALL, amount=100),
+                events=(),
+            ),
+            replay_hand_number=3,
+        )
+
+    reply = asyncio.run(scenario())
+
+    assert reply == "Replay reply"
+    replay_prompt = "\n".join(item["content"] for item in client.chat.completions.messages_list[1])
+    replay_instructions = client.chat.completions.messages_list[1][0]["content"]
+    assert "Public note v1" in replay_prompt
+    assert "Recorded next action:" in replay_prompt
+    assert "p1: call 100" in replay_prompt
+    assert "Hand #3" in replay_prompt
+    assert "Hand #1" not in replay_prompt
+    assert "Hand #2" not in replay_prompt
+    assert "First explain the spot in general" in replay_instructions

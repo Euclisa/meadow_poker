@@ -120,6 +120,16 @@
     justify-content: flex-start;
   }
 
+  .replay-dock {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .replay-dock__nav,
+  .replay-dock__analysis {
+    justify-content: flex-start;
+  }
+
   .action-dock__idle,
   .action-dock__live {
     flex-wrap: wrap;
@@ -184,6 +194,18 @@
   .action-dock__live {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .replay-dock__summary,
+  .replay-dock__nav,
+  .replay-dock__analysis {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .replay-dock__buttons {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .action-dock__buttons {

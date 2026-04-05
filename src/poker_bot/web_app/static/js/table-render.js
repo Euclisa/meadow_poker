@@ -53,7 +53,14 @@ export function renderStatusMarkup(snapshot, {
           : ""
       }
 
-      ${renderPlayWindow(snapshot, { joinName, busy, coachPending, actionAmount })}
+      ${renderPlayWindow(snapshot, {
+        joinName,
+        busy,
+        coachPending,
+        actionAmount,
+        coachReply,
+        coachVisible,
+      })}
       ${renderCoachBubble({ coachReply, coachVisible, coachPending })}
       ${renderHistoryStrip(snapshot)}
       ${renderCompletedHands(snapshot)}
@@ -210,9 +217,19 @@ function renderSeatAmountBadge(seatAmountBadge, { side }) {
   `;
 }
 
-function renderToolbar(snapshot, { joinName = "", busy = false, coachPending = false, actionAmount = "" } = {}) {
+function renderToolbar(
+  snapshot,
+  {
+    joinName = "",
+    busy = false,
+    coachPending = false,
+    actionAmount = "",
+    coachReply = "",
+    coachVisible = false,
+  } = {},
+) {
   if (snapshot.replay?.active) {
-    return renderReplayToolbar(snapshot);
+    return renderReplayToolbar(snapshot, { coachPending, coachReply, coachVisible });
   }
   const controls = snapshot.controls;
   const summary = snapshot.config_summary;
@@ -319,34 +336,52 @@ function renderToolbar(snapshot, { joinName = "", busy = false, coachPending = f
   `;
 }
 
-function renderReplayToolbar(snapshot) {
+function renderReplayToolbar(snapshot, { coachPending = false, coachReply = "", coachVisible = false } = {}) {
   const replay = snapshot.replay;
   return `
-    <section class="panel panel--toolbar replay-toolbar">
-      <div class="toolbar__summary">
+    <section class="panel panel--toolbar replay-dock">
+      <div class="replay-dock__summary">
         <span class="chip">Hand ${replay.hand_number}</span>
         <span class="chip chip--soft">Step ${replay.current_step + 1}/${replay.total_steps}</span>
         <span class="chip chip--soft">${formatChips(snapshot.config_summary.small_blind)} / ${formatChips(snapshot.config_summary.big_blind)}</span>
       </div>
-      <div class="replay-toolbar__controls">
-        <button class="button button--ghost" id="replay-first-step" type="button" ${replay.can_step_backward ? "" : "disabled"}>&laquo;</button>
-        <button class="button button--ghost" id="replay-prev-step" type="button" ${replay.can_step_backward ? "" : "disabled"}>&larr;</button>
-        <span class="replay-toolbar__label">Use the arrows to walk the hand.</span>
-        <button class="button button--ghost" id="replay-next-step" type="button" ${replay.can_step_forward ? "" : "disabled"}>&rarr;</button>
-        <button class="button button--ghost" id="replay-last-step" type="button" ${replay.can_step_forward ? "" : "disabled"}>&raquo;</button>
+      <div class="replay-dock__nav">
+        <div class="replay-dock__buttons">
+          <button class="button button--ghost" id="replay-first-step" type="button" ${replay.can_step_backward ? "" : "disabled"}>&laquo;</button>
+          <button class="button button--ghost" id="replay-prev-step" type="button" ${replay.can_step_backward ? "" : "disabled"}>&larr;</button>
+          <button class="button button--ghost" id="replay-next-step" type="button" ${replay.can_step_forward ? "" : "disabled"}>&rarr;</button>
+          <button class="button button--ghost" id="replay-last-step" type="button" ${replay.can_step_forward ? "" : "disabled"}>&raquo;</button>
+        </div>
+      </div>
+      <div class="replay-dock__analysis">
+        <button
+          class="button button--coach"
+          id="coach-button"
+          type="button"
+          title="${snapshot.controls.can_request_coach ? "Analyze this replay spot" : "Replay analysis unavailable at this step"}"
+          ${!snapshot.controls.can_request_coach || coachPending ? "disabled" : ""}>
+          ${coachPending
+            ? "..."
+            : `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 20A7 7 0 0 1 9.8 6.9C15.5 4.9 17 3.5 19 2c1 2 2 4.5 1 8-1.5 5.5-5 7-9 10z"/><path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12"/></svg>`}
+        </button>
       </div>
     </section>
   `;
 }
 
-function renderCoachBubble({ coachReply = "", coachVisible = false, coachPending = false } = {}) {
+function renderCoachBubble({
+  coachReply = "",
+  coachVisible = false,
+  coachPending = false,
+  label = "Coach tip",
+} = {}) {
   if (!coachVisible && !coachPending) {
     return "";
   }
   return `
     <aside class="coach-bubble${coachPending ? " coach-bubble--pending" : ""}">
       <button class="coach-bubble__close" id="coach-bubble-close" type="button" aria-label="Close coach tip">×</button>
-      <div class="coach-bubble__label">${coachPending ? "Coach is thinking" : "Coach tip"}</div>
+      <div class="coach-bubble__label">${escapeHtml(label)}</div>
       <div class="coach-bubble__text">
         ${coachPending ? "Looking at the spot..." : escapeHtml(coachReply)}
       </div>

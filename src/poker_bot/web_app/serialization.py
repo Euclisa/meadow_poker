@@ -3,11 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from poker_bot.players.rendering import render_events
+from poker_bot.replay import replay_next_transition
 from poker_bot.types import (
     DecisionRequest,
     GameEvent,
     GamePhase,
     HandArchive,
+    HandTransition,
     PlayerView,
     PublicTableView,
     ReplayFrame,
@@ -123,6 +125,7 @@ def serialize_replay_snapshot(
     viewer = session.find_reservation_by_token(seat_token)
     viewer_seat_id = viewer.seat_id if viewer is not None else None
     human_seat_ids = {user.seat_id for user in session.claimed_web_users}
+    analysis = _serialize_replay_analysis(archive, frame, viewer_seat_id=viewer_seat_id)
     public_table = _serialize_public_table(
         frame.public_table_view,
         human_seat_ids=human_seat_ids,
@@ -139,6 +142,7 @@ def serialize_replay_snapshot(
             "can_step_backward": frame.step_index > 0,
             "can_step_forward": frame.step_index < frame.total_steps - 1,
             "replay_path": f"/table/{session.table_id}/replay/{archive.record.hand_number}",
+            "analysis": analysis,
         },
         "config_summary": {
             "total_seats": session.total_seats,
@@ -170,12 +174,57 @@ def serialize_replay_snapshot(
             "can_leave": False,
             "can_cancel": False,
             "can_act": False,
-            "can_request_coach": False,
+            "can_request_coach": analysis["eligible"] and session.coach is not None,
             "share_path": f"/table/{session.table_id}",
             "join_disabled_reason": None,
         },
         "message": f"Replay for hand #{archive.record.hand_number}",
         "showdown": _serialize_replay_showdown(frame),
+    }
+
+
+def _serialize_replay_analysis(
+    archive: HandArchive,
+    frame: ReplayFrame,
+    *,
+    viewer_seat_id: str | None,
+) -> dict[str, Any]:
+    transition = replay_next_transition(archive.trace, frame.step_index)
+    seat_names = {seat.seat_id: seat.name for seat in frame.public_table_view.seats}
+    if transition is None:
+        return {
+            "eligible": False,
+            "status": "complete",
+            "message": "No decision spot here",
+            "next_action": None,
+        }
+    if transition.kind != "action":
+        return {
+            "eligible": False,
+            "status": "automatic",
+            "message": "No decision spot here",
+            "next_action": None,
+        }
+    next_action = _serialize_replay_action(transition, seat_names=seat_names)
+    if viewer_seat_id is None:
+        return {
+            "eligible": False,
+            "status": "viewer_required",
+            "message": next_action["label"],
+            "next_action": next_action,
+        }
+    if transition.seat_id != viewer_seat_id:
+        return {
+            "eligible": False,
+            "status": "other_player_action",
+            "message": f"Next: {next_action['actor_name']} acts",
+            "next_action": next_action,
+        }
+    return {
+        "eligible": True,
+        "status": "viewer_action",
+        "message": next_action["label"],
+        "next_action": next_action,
     }
 
 
@@ -352,6 +401,29 @@ def _serialize_replay_seat_amount_badges(frame: ReplayFrame) -> list[dict[str, A
         for seat in frame.public_table_view.seats
         if seat.street_contribution > 0
     ]
+
+
+def _serialize_replay_action(
+    transition: HandTransition,
+    *,
+    seat_names: dict[str, str],
+) -> dict[str, Any]:
+    action = transition.action
+    seat_id = transition.seat_id or "unknown"
+    actor_name = seat_names.get(seat_id, seat_id)
+    action_type = action.action_type.value if action is not None else "unknown"
+    amount = action.amount if action is not None else None
+    if amount is not None:
+        label = f"{actor_name} {action_type} {amount}"
+    else:
+        label = f"{actor_name} {action_type}"
+    return {
+        "seat_id": seat_id,
+        "actor_name": actor_name,
+        "action_type": action_type,
+        "amount": amount,
+        "label": label,
+    }
 
 
 def _event_kind(event: GameEvent) -> str:

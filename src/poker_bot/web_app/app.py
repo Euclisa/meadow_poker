@@ -9,11 +9,17 @@ from typing import Any
 
 from poker_bot.coach import CoachRequestError, TableCoach
 from poker_bot.config import CoachSettings, LLMSettings
+from poker_bot.hand_history import render_replay_public_hand_summary
 from poker_bot.naming import BotNameAllocator
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
 from poker_bot.poker.engine import PokerEngine
-from poker_bot.replay import HandReplayBuildError, HandReplaySession
+from poker_bot.replay import (
+    HandReplayBuildError,
+    HandReplaySession,
+    ReplayAnalysisError,
+    build_replay_decision_spot,
+)
 from poker_bot.table_runner import run_table
 from poker_bot.types import ActionType, PlayerAction, PlayerUpdate, PlayerUpdateType, SeatConfig, TableConfig, TelegramTableState
 from poker_bot.web_app.player import WebPlayerAgent
@@ -83,6 +89,7 @@ class WebApp:
         app.router.add_post("/api/tables/{table_id}/coach", self.handle_request_coach)
         app.router.add_get("/api/tables/{table_id}/state", self.handle_table_state)
         app.router.add_get("/api/tables/{table_id}/replay/{hand_number}", self.handle_replay_state)
+        app.router.add_post("/api/tables/{table_id}/replay/{hand_number}/coach", self.handle_request_replay_coach)
         app.router.add_get("/api/tables/{table_id}/stream", self.handle_table_stream)
         app.router.add_static("/static", _STATIC_DIR)
         return app
@@ -404,6 +411,65 @@ class WebApp:
                 seat_token=authorized_token,
             )
         )
+
+    async def handle_request_replay_coach(self, request: Any) -> Any:
+        payload = await self._read_json(request)
+        table_id = request.match_info["table_id"]
+        hand_number = self._parse_int(request.match_info["hand_number"])
+        seat_token = self._normalize_token(payload.get("seat_token"))
+        step_index = self._parse_int(payload.get("step"))
+        if hand_number is None:
+            return self._error_response("Invalid hand number.", status=400)
+        if step_index is None:
+            return self._error_response("Replay step is required.", status=400)
+
+        try:
+            session = self._require_table(table_id)
+            viewer = self._require_reservation(session, seat_token)
+        except KeyError:
+            return self._error_response("Table not found.", status=404)
+        except PermissionError as exc:
+            return self._error_response(str(exc), status=403)
+
+        if session.coach is None:
+            return self._error_response("Coach is not enabled for this table.", status=400)
+
+        archive = session.find_completed_hand_archive(hand_number)
+        if archive is None:
+            return self._error_response("Completed hand not found.", status=404)
+
+        try:
+            spot = build_replay_decision_spot(
+                archive.trace,
+                step_index=step_index,
+                viewer_seat_id=viewer.seat_id,
+            )
+        except HandReplayBuildError as exc:
+            logger.warning("Replay build failed table=%s hand=%s error=%s", table_id, hand_number, exc)
+            return self._error_response("Replay could not be built for this hand.", status=500)
+        except IndexError:
+            return self._error_response("Replay step is out of range.", status=400)
+        except ReplayAnalysisError as exc:
+            return self._error_response(str(exc), status=400)
+
+        replay_hand_summary = render_replay_public_hand_summary(
+            hand_number=archive.record.hand_number,
+            events=spot.frame.visible_events,
+            start_public_view=archive.record.start_public_view,
+            current_public_view=spot.frame.public_table_view,
+        )
+        try:
+            reply = await session.coach.analyze_replay_spot(
+                table_id=session.table_id,
+                seat_id=viewer.seat_id,
+                decision=spot.decision,
+                replay_hand_summary=replay_hand_summary,
+                next_transition=spot.next_transition,
+                replay_hand_number=archive.record.hand_number,
+            )
+        except CoachRequestError as exc:
+            return self._error_response(str(exc), status=504)
+        return self._json_response({"ok": True, "reply": reply})
 
     async def handle_table_stream(self, request: Any) -> Any:
         table_id = request.match_info["table_id"]

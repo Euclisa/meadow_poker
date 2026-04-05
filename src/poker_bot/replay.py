@@ -3,11 +3,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from poker_bot.poker.engine import PokerEngine
-from poker_bot.types import GameEvent, HandTransition, HandTrace, ReplayFrame
+from poker_bot.types import DecisionRequest, GameEvent, HandTransition, HandTrace, ReplayFrame
 
 
 class HandReplayBuildError(RuntimeError):
     pass
+
+
+class ReplayAnalysisError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayDecisionSpot:
+    frame: ReplayFrame
+    decision: DecisionRequest
+    next_transition: HandTransition
 
 
 @dataclass(slots=True)
@@ -27,29 +38,7 @@ class HandReplaySession:
             self.current_step_index = step_index
             return cached
 
-        engine = PokerEngine.from_hand_state_snapshot(self.trace.initial_state)
-        visible_events = list(self.trace.initial_events)
-        focused_events = self.trace.initial_events
-
-        for index, transition in enumerate(self.trace.transitions[:step_index], start=1):
-            emitted_events = _apply_transition(engine, transition)
-            if emitted_events != transition.events:
-                raise HandReplayBuildError(
-                    f"Replay diverged on hand #{self.trace.hand_number} at transition {index}"
-                )
-            visible_events.extend(emitted_events)
-            focused_events = emitted_events
-
-        frame = ReplayFrame(
-            step_index=step_index,
-            total_steps=self.trace.total_steps,
-            public_table_view=engine.get_public_table_view(),
-            player_view=engine.get_player_view(viewer) if viewer is not None else None,
-            visible_events=tuple(visible_events),
-            focused_events=focused_events,
-            revealed_seats=tuple(_revealed_seats(visible_events).items()),
-            winner_amounts=tuple(_winner_amounts(visible_events).items()),
-        )
+        _engine, frame = _materialize_replay_state(self.trace, step_index, viewer)
         self._frame_cache[cache_key] = frame
         self.current_step_index = step_index
         return frame
@@ -81,6 +70,36 @@ def validate_hand_trace(trace: HandTrace) -> None:
             raise HandReplayBuildError(f"Replay final state mismatch for hand #{trace.hand_number}")
 
 
+def build_replay_decision_spot(
+    trace: HandTrace,
+    *,
+    step_index: int,
+    viewer_seat_id: str,
+) -> ReplayDecisionSpot:
+    if not viewer_seat_id:
+        raise ReplayAnalysisError("Replay coach requires a viewer seat.")
+    engine, frame = _materialize_replay_state(trace, step_index, viewer_seat_id)
+    next_transition = replay_next_transition(trace, step_index)
+    if next_transition is None:
+        raise ReplayAnalysisError("Replay coach is not available on the final replay step.")
+    if next_transition.kind != "action":
+        raise ReplayAnalysisError("Replay coach is only available before a recorded player action.")
+    if next_transition.seat_id != viewer_seat_id:
+        raise ReplayAnalysisError("Replay coach is only available for your own recorded action spots.")
+    decision = engine.get_decision_request(viewer_seat_id)
+    if engine.get_acting_seat() != viewer_seat_id or not decision.legal_actions:
+        raise ReplayAnalysisError("Replay decision context is unavailable for this spot.")
+    return ReplayDecisionSpot(frame=frame, decision=decision, next_transition=next_transition)
+
+
+def replay_next_transition(trace: HandTrace, step_index: int) -> HandTransition | None:
+    if not 0 <= step_index < trace.total_steps:
+        raise IndexError(f"Replay step {step_index} is out of range")
+    if step_index >= len(trace.transitions):
+        return None
+    return trace.transitions[step_index]
+
+
 def _apply_transition(engine: PokerEngine, transition: HandTransition) -> tuple[GameEvent, ...]:
     if transition.kind == "action":
         if transition.seat_id is None or transition.action is None:
@@ -102,6 +121,40 @@ def _apply_transition(engine: PokerEngine, transition: HandTransition) -> tuple[
             raise HandReplayBuildError("Replay expected an automatic transition but none was pending")
         return progress.events
     raise HandReplayBuildError(f"Unknown replay transition kind: {transition.kind}")
+
+
+def _materialize_replay_state(
+    trace: HandTrace,
+    step_index: int,
+    viewer_seat_id: str | None,
+) -> tuple[PokerEngine, ReplayFrame]:
+    if not 0 <= step_index < trace.total_steps:
+        raise IndexError(f"Replay step {step_index} is out of range")
+
+    engine = PokerEngine.from_hand_state_snapshot(trace.initial_state)
+    visible_events = list(trace.initial_events)
+    focused_events = trace.initial_events
+
+    for index, transition in enumerate(trace.transitions[:step_index], start=1):
+        emitted_events = _apply_transition(engine, transition)
+        if emitted_events != transition.events:
+            raise HandReplayBuildError(
+                f"Replay diverged on hand #{trace.hand_number} at transition {index}"
+            )
+        visible_events.extend(emitted_events)
+        focused_events = emitted_events
+
+    frame = ReplayFrame(
+        step_index=step_index,
+        total_steps=trace.total_steps,
+        public_table_view=engine.get_public_table_view(),
+        player_view=engine.get_player_view(viewer_seat_id) if viewer_seat_id is not None else None,
+        visible_events=tuple(visible_events),
+        focused_events=focused_events,
+        revealed_seats=tuple(_revealed_seats(visible_events).items()),
+        winner_amounts=tuple(_winner_amounts(visible_events).items()),
+    )
+    return engine, frame
 
 
 def _revealed_seats(events: list[GameEvent]) -> dict[str, tuple[str, str]]:

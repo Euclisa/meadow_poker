@@ -794,6 +794,8 @@ def test_web_app_completed_hand_exposes_replay_link_and_replay_snapshot() -> Non
         replay_snapshot = decode_json_response(replay_state)
         assert replay_snapshot["replay"]["active"] is True
         assert replay_snapshot["replay"]["current_step"] == 0
+        assert replay_snapshot["replay"]["analysis"]["status"] == "viewer_action"
+        assert replay_snapshot["replay"]["analysis"]["next_action"]["action_type"] == "fold"
         assert replay_snapshot["pending_decision"] is None
         assert replay_snapshot["controls"]["can_act"] is False
         assert replay_snapshot["player_view"]["hole_cards"]
@@ -810,7 +812,115 @@ def test_web_app_completed_hand_exposes_replay_link_and_replay_snapshot() -> Non
         )
         final_replay_snapshot = decode_json_response(final_replay_state)
         assert final_replay_snapshot["public_table"]["phase"] == "hand_complete"
+        assert final_replay_snapshot["replay"]["analysis"]["status"] == "complete"
         assert final_replay_snapshot["showdown"] is None
+
+    asyncio.run(scenario())
+
+
+def test_web_app_replay_coach_state_and_endpoint_follow_viewer_action_spots() -> None:
+    app = make_web_app(max_hands=1, coach_outputs=["Replay coach reply"])
+
+    async def scenario() -> None:
+        create_response = await app.handle_create_table(
+            FakeRequest(
+                payload={
+                    "display_name": "Alice",
+                    "total_seats": 2,
+                    "llm_seat_count": 0,
+                    "big_blind": 100,
+                    "stack_depth": 20,
+                }
+            )
+        )
+        created = decode_json_response(create_response)
+        alice_token = created["seat_token"]
+        table_id = created["table_id"]
+
+        join_response = await app.handle_join_table(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={"display_name": "Bob"},
+            )
+        )
+        bob_token = decode_json_response(join_response)["seat_token"]
+
+        await app.handle_start_table(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={"seat_token": alice_token},
+            )
+        )
+
+        await _wait_for_turn(app, table_id=table_id, seat_token=alice_token)
+        await _submit_action(app, table_id=table_id, seat_token=alice_token, action_type="fold")
+        await asyncio.sleep(0.05)
+
+        alice_replay_state = decode_json_response(
+            await app.handle_replay_state(
+                FakeRequest(
+                    match_info={"table_id": table_id, "hand_number": "1"},
+                    query={"seat_token": alice_token, "step": "0"},
+                )
+            )
+        )
+        assert alice_replay_state["controls"]["can_request_coach"] is True
+        assert alice_replay_state["replay"]["analysis"]["status"] == "viewer_action"
+        assert alice_replay_state["replay"]["analysis"]["message"] == "Alice fold"
+        assert alice_replay_state["replay"]["analysis"]["next_action"]["label"] == "Alice fold"
+
+        bob_replay_state = decode_json_response(
+            await app.handle_replay_state(
+                FakeRequest(
+                    match_info={"table_id": table_id, "hand_number": "1"},
+                    query={"seat_token": bob_token, "step": "0"},
+                )
+            )
+        )
+        assert bob_replay_state["controls"]["can_request_coach"] is False
+        assert bob_replay_state["replay"]["analysis"]["status"] == "other_player_action"
+
+        anonymous_replay_state = await app.handle_replay_state(
+            FakeRequest(
+                match_info={"table_id": table_id, "hand_number": "1"},
+                query={"step": "0"},
+            )
+        )
+        assert anonymous_replay_state.status == 403
+
+        replay_coach_response = await app.handle_request_replay_coach(
+            FakeRequest(
+                match_info={"table_id": table_id, "hand_number": "1"},
+                payload={
+                    "seat_token": alice_token,
+                    "step": 0,
+                },
+            )
+        )
+        assert replay_coach_response.status == 200
+        assert decode_json_response(replay_coach_response)["reply"] == "Replay coach reply"
+
+        wrong_viewer_response = await app.handle_request_replay_coach(
+            FakeRequest(
+                match_info={"table_id": table_id, "hand_number": "1"},
+                payload={
+                    "seat_token": bob_token,
+                    "step": 0,
+                },
+            )
+        )
+        assert wrong_viewer_response.status == 400
+
+        automatic_step_response = await app.handle_request_replay_coach(
+            FakeRequest(
+                match_info={"table_id": table_id, "hand_number": "1"},
+                payload={
+                    "seat_token": alice_token,
+                    "step": 1,
+                },
+            )
+        )
+        assert automatic_step_response.status == 400
 
     asyncio.run(scenario())
 
@@ -933,6 +1043,18 @@ def test_rendered_table_markup_shows_replay_controls() -> None:
             "can_step_backward": False,
             "can_step_forward": True,
             "replay_path": "/table/abcd/replay/1",
+            "analysis": {
+                "eligible": True,
+                "status": "viewer_action",
+                "message": "Hero fold",
+                "next_action": {
+                    "seat_id": "web_1",
+                    "actor_name": "Hero",
+                    "action_type": "fold",
+                    "amount": None,
+                    "label": "Hero fold",
+                },
+            },
         },
         "config_summary": {
             "web_seats": 2,
@@ -951,7 +1073,7 @@ def test_rendered_table_markup_shows_replay_controls() -> None:
             "can_cancel": False,
             "can_leave": False,
             "can_act": False,
-            "can_request_coach": False,
+            "can_request_coach": True,
             "share_path": "/table/abcd",
         },
         "completed_hands": [],
@@ -1024,7 +1146,132 @@ def test_rendered_table_markup_shows_replay_controls() -> None:
 
     assert 'id="replay-next-step"' in result.stdout
     assert 'id="replay-prev-step"' in result.stdout
-    assert "Use the arrows to walk the hand." in result.stdout
+    assert 'id="coach-button"' in result.stdout
+    assert 'title="Analyze this replay spot"' in result.stdout
+    assert "Use the arrows to walk the hand." not in result.stdout
+    assert "Analyze spot" not in result.stdout
+    assert "Hero fold" not in result.stdout
+
+
+def test_rendered_table_markup_shows_passive_replay_analysis_when_not_eligible() -> None:
+    snapshot = {
+        "status": "completed",
+        "table_id": "abcd",
+        "message": "Replay for hand #1",
+        "replay": {
+            "active": True,
+            "hand_number": 1,
+            "current_step": 1,
+            "total_steps": 3,
+            "can_step_backward": True,
+            "can_step_forward": True,
+            "replay_path": "/table/abcd/replay/1",
+            "analysis": {
+                "eligible": False,
+                "status": "other_player_action",
+                "message": "Next: Villain acts",
+                "next_action": {
+                    "seat_id": "web_2",
+                    "actor_name": "Villain",
+                    "action_type": "check",
+                    "amount": None,
+                    "label": "Villain check",
+                },
+            },
+        },
+        "config_summary": {
+            "web_seats": 2,
+            "claimed_web_seats": 2,
+            "llm_seats": 0,
+            "small_blind": 50,
+            "big_blind": 100,
+            "starting_stack": 2000,
+            "stack_depth": 20,
+        },
+        "waiting_players": [],
+        "controls": {
+            "is_joined": True,
+            "join_disabled_reason": None,
+            "can_start": False,
+            "can_cancel": False,
+            "can_leave": False,
+            "can_act": False,
+            "can_request_coach": False,
+            "share_path": "/table/abcd",
+        },
+        "completed_hands": [],
+        "pending_decision": None,
+        "seat_amount_badges": [],
+        "recent_events": [],
+        "player_view": {
+            "seat_id": "web_1",
+            "player_name": "Hero",
+            "hole_cards": ["2c", "3d"],
+            "stack": 1950,
+            "contribution": 50,
+            "position": "dealer",
+            "to_call": 50,
+        },
+        "public_table": {
+            "hand_number": 1,
+            "phase": "preflop",
+            "board_cards": [],
+            "pot_total": 150,
+            "current_bet": 100,
+            "dealer_seat_id": "web_1",
+            "acting_seat_id": "web_2",
+            "small_blind": 50,
+            "big_blind": 100,
+            "seats": [
+                {
+                    "seat_id": "web_1",
+                    "name": "Hero",
+                    "stack": 1950,
+                    "contribution": 50,
+                    "street_contribution": 50,
+                    "folded": False,
+                    "all_in": False,
+                    "in_hand": True,
+                    "position": "dealer",
+                    "is_human": True,
+                    "is_viewer": True,
+                },
+                {
+                    "seat_id": "web_2",
+                    "name": "Villain",
+                    "stack": 1900,
+                    "contribution": 100,
+                    "street_contribution": 100,
+                    "folded": False,
+                    "all_in": False,
+                    "in_hand": True,
+                    "position": "big_blind",
+                    "is_human": True,
+                    "is_viewer": False,
+                },
+            ],
+        },
+        "showdown": None,
+    }
+
+    command = [
+        "node",
+        "--experimental-default-type=module",
+        "-e",
+        (
+            "import { renderStatusMarkup } from './src/poker_bot/web_app/static/js/table-render.js';"
+            "const snapshot = JSON.parse(process.argv[1]);"
+            "console.log(renderStatusMarkup(snapshot));"
+        ),
+        json.dumps(snapshot),
+    ]
+    result = subprocess.run(command, cwd=Path.cwd(), check=True, text=True, capture_output=True)
+
+    assert 'id="coach-button"' in result.stdout
+    assert 'title="Replay analysis unavailable at this step"' in result.stdout
+    assert "disabled" in result.stdout
+    assert "Next: Villain acts" not in result.stdout
+    assert "Analyze spot" not in result.stdout
 
 
 def test_frontend_static_files_exist_and_include_core_hooks() -> None:

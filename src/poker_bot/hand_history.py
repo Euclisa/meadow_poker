@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from poker_bot.types import GameEvent, HandRecord, PlayerView
+from poker_bot.types import GameEvent, HandRecord, PlayerView, PublicTableView
 
 
 def render_public_completed_hand_summary(record: HandRecord) -> str:
@@ -9,6 +9,22 @@ def render_public_completed_hand_summary(record: HandRecord) -> str:
 
 def render_live_public_hand_summary(record: HandRecord) -> str:
     return _render_public_hand_summary(record, live=True)
+
+
+def render_replay_public_hand_summary(
+    *,
+    hand_number: int,
+    events: tuple[GameEvent, ...],
+    start_public_view: PublicTableView,
+    current_public_view: PublicTableView,
+) -> str:
+    return _render_public_hand_summary_from_parts(
+        hand_number=hand_number,
+        events=events,
+        start_public_view=start_public_view,
+        current_public_view=current_public_view,
+        live=True,
+    )
 
 
 def render_private_completed_hand_summary(record: HandRecord, player_view: PlayerView) -> str:
@@ -23,7 +39,24 @@ def render_private_completed_hand_summary(record: HandRecord, player_view: Playe
 
 
 def _render_public_hand_summary(record: HandRecord, *, live: bool) -> str:
-    seat_names = {seat.seat_id: seat.name for seat in record.current_public_view.seats}
+    return _render_public_hand_summary_from_parts(
+        hand_number=record.hand_number,
+        events=record.events,
+        start_public_view=record.start_public_view,
+        current_public_view=record.current_public_view,
+        live=live,
+    )
+
+
+def _render_public_hand_summary_from_parts(
+    *,
+    hand_number: int,
+    events: tuple[GameEvent, ...],
+    start_public_view: PublicTableView,
+    current_public_view: PublicTableView,
+    live: bool,
+) -> str:
+    seat_names = {seat.seat_id: seat.name for seat in current_public_view.seats}
     sections: list[str] = []
     current_heading = "Preflop:"
     current_lines: list[str] = []
@@ -36,7 +69,7 @@ def _render_public_hand_summary(record: HandRecord, *, live: bool) -> str:
             sections.append("\n".join([current_heading, *current_lines]))
             current_lines = []
 
-    for event in record.events:
+    for event in events:
         payload = event.payload
         if event.event_type == "street_started":
             phase = payload["phase"]
@@ -68,13 +101,13 @@ def _render_public_hand_summary(record: HandRecord, *, live: bool) -> str:
     flush_current_section()
 
     lines = [
-        f"Hand #{record.hand_number}",
-        f"Status: {record.current_public_view.phase.value}",
+        f"Hand #{hand_number}",
+        f"Status: {current_public_view.phase.value}",
         "",
         "Players at hand start:",
         *[
             f"- {seat.seat_id} {seat.name}: stack={seat.stack}"
-            for seat in record.start_public_view.seats
+            for seat in start_public_view.seats
         ],
     ]
     if sections:
@@ -83,8 +116,8 @@ def _render_public_hand_summary(record: HandRecord, *, live: bool) -> str:
         lines.extend(
             [
                 "",
-                f"Board: {' '.join(record.current_public_view.board_cards) or '-'}",
-                f"Pot: {record.current_public_view.pot_total}",
+                f"Board: {' '.join(current_public_view.board_cards) or '-'}",
+                f"Pot: {current_public_view.pot_total}",
             ]
         )
     if showdown_lines:
@@ -98,7 +131,7 @@ def _render_public_hand_summary(record: HandRecord, *, live: bool) -> str:
             stack_heading,
             *[
                 f"- {seat.name}: {seat.stack}"
-                for seat in record.current_public_view.seats
+                for seat in current_public_view.seats
             ],
         ]
     )
