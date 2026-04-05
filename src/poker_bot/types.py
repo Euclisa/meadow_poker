@@ -272,6 +272,16 @@ class ReplayFrame:
 class TelegramTableCreateRequest:
     total_seats: int
     llm_seat_count: int
+    small_blind: int = 50
+    big_blind: int = 100
+    starting_stack: int = 2_000
+
+    def __post_init__(self) -> None:
+        TableConfig(
+            small_blind=self.small_blind,
+            big_blind=self.big_blind,
+            starting_stack=self.starting_stack,
+        )
 
     @property
     def telegram_seat_count(self) -> int:
@@ -284,6 +294,9 @@ class TelegramTableStatus:
     status: TelegramTableState
     creator_user_id: int
     total_seats: int
+    small_blind: int
+    big_blind: int
+    starting_stack: int
     telegram_seats_total: int
     telegram_seats_claimed: int
     llm_seat_count: int

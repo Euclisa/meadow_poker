@@ -44,6 +44,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Maximum hands to play. Omit for unlimited (plays until one player remains).",
     )
+    cli_parser.add_argument(
+        "--big-blind",
+        type=int,
+        default=100,
+        help="Big blind amount. Defaults to 100.",
+    )
+    cli_parser.add_argument(
+        "--small-blind",
+        type=int,
+        default=None,
+        help="Small blind amount. Defaults to half of --big-blind.",
+    )
+    cli_parser.add_argument(
+        "--starting-stack",
+        type=int,
+        default=None,
+        help="Starting stack size. Defaults to 20 times --big-blind.",
+    )
 
     subparsers.add_parser("telegram", help="Run the Telegram bot")
     subparsers.add_parser("web", help="Run the web lobby and table UI")
@@ -51,12 +69,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def run_cli_mode(config: ProjectConfig, *, players_spec: str, max_hands: int) -> None:
+async def run_cli_mode(
+    config: ProjectConfig,
+    *,
+    players_spec: str,
+    max_hands: int | None,
+    big_blind: int = 100,
+    small_blind: int | None = None,
+    starting_stack: int | None = None,
+) -> None:
     player_entries = [item.strip() for item in players_spec.split(",") if item.strip()]
     if len(player_entries) < 2:
         raise ValueError("CLI mode requires at least 2 players.")
     if len(player_entries) > config.game.max_players:
         raise ValueError("CLI player count cannot exceed game.max_players from the config file.")
+    resolved_small_blind = max(1, big_blind // 2) if small_blind is None else small_blind
+    resolved_starting_stack = big_blind * 20 if starting_stack is None else starting_stack
 
     seats: list[SeatConfig] = []
     agents = {}
@@ -84,9 +112,9 @@ async def run_cli_mode(config: ProjectConfig, *, players_spec: str, max_hands: i
 
     engine = PokerEngine.create_table(
         TableConfig(
-            small_blind=config.game.small_blind,
-            big_blind=config.game.big_blind,
-            starting_stack=config.game.starting_stack,
+            small_blind=resolved_small_blind,
+            big_blind=big_blind,
+            starting_stack=resolved_starting_stack,
             max_players=config.game.max_players,
         ),
         seats,
@@ -103,9 +131,6 @@ async def run_telegram_mode(config: ProjectConfig) -> None:
             bot_username=config.telegram.bot_username,
             llm=config.llm,
             coach=config.coach,
-            small_blind=config.game.small_blind,
-            big_blind=config.game.big_blind,
-            starting_stack=config.game.starting_stack,
             max_players=config.game.max_players,
             max_hands_per_table=config.telegram.max_hands_per_table,
         )
@@ -123,9 +148,6 @@ async def run_web_mode(config: ProjectConfig) -> None:
             port=config.web.port,
             llm=config.llm,
             coach=config.coach,
-            small_blind=config.game.small_blind,
-            big_blind=config.game.big_blind,
-            starting_stack=config.game.starting_stack,
             max_players=config.game.max_players,
             max_hands_per_table=config.web.max_hands_per_table,
             showdown_delay_seconds=config.web.showdown_delay_seconds,
@@ -145,7 +167,16 @@ def main() -> None:
     )
     logger.debug("Loaded config from %s", args.config)
     if args.mode == "cli":
-        asyncio.run(run_cli_mode(config, players_spec=args.players, max_hands=args.max_hands))
+        asyncio.run(
+            run_cli_mode(
+                config,
+                players_spec=args.players,
+                max_hands=args.max_hands,
+                big_blind=args.big_blind,
+                small_blind=args.small_blind,
+                starting_stack=args.starting_stack,
+            )
+        )
         return
     if args.mode == "telegram":
         asyncio.run(run_telegram_mode(config))

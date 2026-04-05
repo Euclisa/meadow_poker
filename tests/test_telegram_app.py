@@ -89,13 +89,31 @@ def make_app(
     return app, sent_messages
 
 
+async def complete_create_flow(
+    app: TelegramApp,
+    *,
+    user_id: int = 1,
+    chat_id: int = 101,
+    display_name: str = "Alice",
+    total_seats: str = "2",
+    llm_seats: str = "0",
+    big_blind: str = "default",
+    small_blind: str = "default",
+    starting_stack: str = "default",
+) -> None:
+    await app.handle_create_table_command(user_id=user_id, chat_id=chat_id)
+    await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=total_seats)
+    await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=llm_seats)
+    await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=big_blind)
+    await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=small_blind)
+    await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=starting_stack)
+
+
 def test_create_table_guided_flow_and_creator_autojoin() -> None:
     app, messages = make_app()
 
     async def scenario() -> None:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="3")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="1")
+        await complete_create_flow(app, total_seats="3", llm_seats="1")
 
     asyncio.run(scenario())
 
@@ -114,9 +132,7 @@ def test_single_human_table_hides_join_info_and_announces_ready_to_start() -> No
     app, messages = make_app()
 
     async def scenario() -> None:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="1")
+        await complete_create_flow(app, total_seats="2", llm_seats="1")
 
     asyncio.run(scenario())
 
@@ -134,9 +150,7 @@ def test_multi_human_table_keeps_join_info_on_creation() -> None:
     app, messages = make_app()
 
     async def scenario() -> None:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="3")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="1")
+        await complete_create_flow(app, total_seats="3", llm_seats="1")
 
     asyncio.run(scenario())
 
@@ -151,9 +165,7 @@ def test_join_and_start_require_creator_and_full_human_seats() -> None:
     app, messages = make_app(max_hands=1)
 
     async def scenario() -> None:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        await complete_create_flow(app, total_seats="2", llm_seats="0")
         table = app.registry.get_user_table(1)
         assert table is not None
         await app.handle_start_game_command(user_id=1, chat_id=101)
@@ -180,9 +192,7 @@ def test_ready_table_notification_emphasizes_start_button_for_creator() -> None:
     app, messages = make_app()
 
     async def scenario() -> None:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        await complete_create_flow(app, total_seats="2", llm_seats="0")
         table = app.registry.get_user_table(1)
         assert table is not None
         await app.handle_join_command(user_id=2, chat_id=202, display_name="Bob", table_id=table.table_id)
@@ -201,9 +211,7 @@ def test_creator_leaving_waiting_table_cancels_it() -> None:
     app, messages = make_app()
 
     async def scenario() -> None:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="3")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="1")
+        await complete_create_flow(app, total_seats="3", llm_seats="1")
         table = app.registry.get_user_table(1)
         assert table is not None
         await app.handle_join_command(user_id=2, chat_id=202, display_name="Bob", table_id=table.table_id)
@@ -222,9 +230,7 @@ def test_join_rejects_full_or_running_tables() -> None:
     app, messages = make_app(max_hands=1)
 
     async def scenario() -> None:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        await complete_create_flow(app, total_seats="2", llm_seats="0")
         table = app.registry.get_user_table(1)
         assert table is not None
         await app.handle_join_command(user_id=2, chat_id=202, display_name="Bob", table_id=table.table_id)
@@ -245,9 +251,7 @@ def test_mixed_table_can_complete_one_hand_and_unregister_users() -> None:
     app, messages = make_app(max_hands=1)
 
     async def scenario() -> None:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="1")
+        await complete_create_flow(app, total_seats="2", llm_seats="1")
         table = app.registry.get_user_table(1)
         assert table is not None
         await app.handle_start_game_command(user_id=1, chat_id=101)
@@ -270,9 +274,7 @@ def test_telegram_coach_is_private_and_blocks_actions_while_pending() -> None:
     app, messages = make_app(max_hands=1, coach_outputs=["Coach reply"], coach_delay=0.05)
 
     async def scenario() -> None:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        await complete_create_flow(app, total_seats="2", llm_seats="0")
         table = app.registry.get_user_table(1)
         assert table is not None
         await app.handle_join_command(user_id=2, chat_id=202, display_name="Bob", table_id=table.table_id)
@@ -310,9 +312,12 @@ def test_telegram_human_and_llm_seat_names_are_assigned_cleanly() -> None:
     )
 
     async def scenario() -> tuple[str, ...]:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice Wonder", text="2")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice Wonder", text="1")
+        await complete_create_flow(
+            app,
+            display_name="Alice Wonder",
+            total_seats="2",
+            llm_seats="1",
+        )
         table = app.registry.get_user_table(1)
         assert table is not None
         await app.handle_start_game_command(user_id=1, chat_id=101)
@@ -335,9 +340,7 @@ def test_telegram_llm_seats_receive_recent_hand_count_config() -> None:
     )
 
     async def scenario() -> int:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="1")
+        await complete_create_flow(app, total_seats="2", llm_seats="1")
         table = app.registry.get_user_table(1)
         assert table is not None
         await app.handle_start_game_command(user_id=1, chat_id=101)
@@ -357,6 +360,9 @@ def test_lobby_buttons_work_as_text_commands() -> None:
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="Create Table")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="My Table")
 
     asyncio.run(scenario())
@@ -374,6 +380,9 @@ def test_help_works_during_create_flow() -> None:
         # Flow should still be active after help
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
 
     asyncio.run(scenario())
 
@@ -402,9 +411,7 @@ def test_leave_notification_shows_display_name() -> None:
     app, messages = make_app()
 
     async def scenario() -> None:
-        await app.handle_create_table_command(user_id=1, chat_id=101)
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="3")
-        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="1")
+        await complete_create_flow(app, total_seats="3", llm_seats="1")
         table = app.registry.get_user_table(1)
         assert table is not None
         await app.handle_join_command(user_id=2, chat_id=202, display_name="Bob", table_id=table.table_id)
@@ -415,3 +422,28 @@ def test_leave_notification_shows_display_name() -> None:
     texts = [text for _chat, text, _markup in messages]
     assert any("Bob left table" in text for text in texts)
     assert not any("User 2 left table" in text for text in texts)
+
+
+def test_create_table_flow_accepts_custom_blinds_and_stack() -> None:
+    app, messages = make_app()
+
+    async def scenario() -> None:
+        await complete_create_flow(
+            app,
+            total_seats="3",
+            llm_seats="1",
+            big_blind="200",
+            small_blind="100",
+            starting_stack="8000",
+        )
+
+    asyncio.run(scenario())
+
+    table = app.registry.get_user_table(1)
+    assert table is not None
+    assert table.request.small_blind == 100
+    assert table.request.big_blind == 200
+    assert table.request.starting_stack == 8000
+    texts = [text for _chat, text, _markup in messages]
+    assert any("Blinds: 100/200" in text for text in texts)
+    assert any("Starting stack: 8000" in text for text in texts)

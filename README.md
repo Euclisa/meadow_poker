@@ -21,9 +21,9 @@ cp config/config.toml.example config/config.toml
 
 ## Configuration
 
-All runtime configuration lives in `config/config.toml`.
+Shared runtime configuration lives in `config/config.toml`. Per-table blinds and stack can be set from CLI flags or during Telegram table creation.
 
-- `[game]` controls blinds, stack size, and table size limits.
+- `[game]` controls shared table-size limits and logging.
 - `[llm]` configures the OpenAI-compatible backend used by LLM seats.
   - `max_output_tokens` is optional. If omitted, no output-token cap is sent to the provider.
   - `recent_hand_count` controls how many completed hand summaries trigger an internal reflection-note update for each LLM seat.
@@ -48,7 +48,7 @@ The committed template is `config/config.toml.example`. The real `config/config.
 Run the CLI table:
 
 ```bash
-PYTHONPATH=src python3 -m poker_bot --config config/config.toml cli --players Alice,bot,Bob --max-hands 1
+PYTHONPATH=src python3 -m poker_bot --config config/config.toml cli --players Alice,bot,Bob --max-hands 1 --big-blind 100 --starting-stack 2000
 ```
 
 Run the Telegram bot:
@@ -56,6 +56,8 @@ Run the Telegram bot:
 ```bash
 PYTHONPATH=src python3 -m poker_bot --config config/config.toml telegram
 ```
+
+Telegram table creation now prompts for seat counts, blinds, and starting stack, with `Default` shortcuts for the standard values.
 
 Run the web lobby and table UI:
 
@@ -84,5 +86,8 @@ The `cli` entry point now requires the local table layout as explicit command-li
 - Any other token, including `cli`, creates a terminal-controlled human seat and uses that token as the display name.
 - Human names must be unique within the table.
 - `--max-hands` controls how many hands the local run will play before exiting.
+- `--big-blind` defaults to `100`.
+- `--small-blind` defaults to half of `--big-blind`.
+- `--starting-stack` defaults to `20` big blinds.
 
-This keeps `config/config.toml` focused on shared services and game defaults, while the CLI command itself explicitly describes the local table you want to run.
+This keeps `config/config.toml` focused on shared services and shared runtime limits, while the CLI command itself explicitly describes the local table you want to run.

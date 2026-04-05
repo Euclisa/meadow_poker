@@ -73,10 +73,13 @@ def test_run_cli_mode_assigns_human_names_and_bot_seats(monkeypatch: pytest.Monk
 
     orchestrator = RecordingOrchestrator.last_instance
     assert orchestrator is not None
-    seats = orchestrator.engine.get_public_table_view().seats
+    table_view = orchestrator.engine.get_public_table_view()
+    seats = table_view.seats
     assert seats[0].name == "Alice"
     assert seats[1].name.endswith("_bot")
     assert seats[2].name == "cli"
+    assert table_view.small_blind == 50
+    assert table_view.big_blind == 100
     assert isinstance(orchestrator.agents["p1"], RecordingCLIPlayerAgent)
     assert isinstance(orchestrator.agents["p2"], RecordingLLMPlayerAgent)
     assert isinstance(orchestrator.agents["p3"], RecordingCLIPlayerAgent)
@@ -113,6 +116,36 @@ def test_run_cli_mode_passes_llm_thought_logging(monkeypatch: pytest.MonkeyPatch
     assert orchestrator is not None
     assert orchestrator.agents["p2"].thought_logging is ThoughtLoggingMode.NOTES
     assert orchestrator.agents["p2"].client.settings.thought_logging is ThoughtLoggingMode.NOTES
+
+
+def test_run_cli_mode_accepts_custom_blinds_and_stack(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_run_table(orchestrator, *, max_hands: int, close_agents: bool = True, after_hand=None) -> None:
+        del max_hands, close_agents, after_hand
+        RecordingOrchestrator.last_instance = orchestrator
+
+    monkeypatch.setattr(main_module, "CLIPlayerAgent", RecordingCLIPlayerAgent)
+    monkeypatch.setattr(main_module, "LLMGameClient", RecordingLLMGameClient)
+    monkeypatch.setattr(main_module, "LLMPlayerAgent", RecordingLLMPlayerAgent)
+    monkeypatch.setattr(main_module, "GameOrchestrator", RecordingOrchestrator)
+    monkeypatch.setattr(main_module, "run_table", fake_run_table)
+
+    asyncio.run(
+        run_cli_mode(
+            make_config(),
+            players_spec="Alice,Bob",
+            max_hands=1,
+            big_blind=200,
+            small_blind=100,
+            starting_stack=8_000,
+        )
+    )
+
+    orchestrator = RecordingOrchestrator.last_instance
+    assert orchestrator is not None
+    table_view = orchestrator.engine.get_public_table_view()
+    assert table_view.small_blind == 100
+    assert table_view.big_blind == 200
+    assert all(seat.stack == 8_000 for seat in table_view.seats)
 
 
 def test_run_cli_mode_rejects_duplicate_human_names_case_insensitively() -> None:

@@ -42,6 +42,9 @@ class TelegramAppConfig:
 class _CreateTableFlowState:
     chat_id: int
     total_seats: int | None = None
+    llm_seat_count: int | None = None
+    big_blind: int | None = None
+    small_blind: int | None = None
 
 
 class TelegramActionRouter:
@@ -136,7 +139,11 @@ class TelegramApp:
             await self._send_message(chat_id, "You are already assigned to a table.")
             return
         self._create_flows[user_id] = _CreateTableFlowState(chat_id=chat_id)
-        await self._send_message(chat_id, "Enter total number of players for the table (2-6).", self._build_create_flow_keyboard())
+        await self._send_message(
+            chat_id,
+            "Enter total number of players for the table (2-6).",
+            self._build_create_flow_keyboard(),
+        )
 
     async def handle_join_command(
         self,
@@ -430,19 +437,99 @@ class TelegramApp:
         if flow.total_seats is None:
             total_seats = self._parse_int(text)
             if total_seats is None or not 2 <= total_seats <= self.config.max_players:
-                await self._send_message(chat_id, f"Enter a valid player count between 2 and {self.config.max_players}.", self._build_create_flow_keyboard())
+                await self._send_message(
+                    chat_id,
+                    f"Enter a valid player count between 2 and {self.config.max_players}.",
+                    self._build_create_flow_keyboard(),
+                )
                 return
             flow.total_seats = total_seats
-            await self._send_message(chat_id, f"Enter number of LLM seats (0-{total_seats - 1}).", self._build_create_flow_keyboard())
+            await self._send_message(
+                chat_id,
+                f"Enter number of LLM seats (0-{total_seats - 1}).",
+                self._build_create_flow_keyboard(),
+            )
             return
 
-        llm_seats = self._parse_int(text)
+        if flow.llm_seat_count is None:
+            llm_seats = self._parse_int(text)
+            assert flow.total_seats is not None
+            if llm_seats is None or not 0 <= llm_seats < flow.total_seats:
+                await self._send_message(
+                    chat_id,
+                    f"Enter a valid LLM seat count between 0 and {flow.total_seats - 1}.",
+                    self._build_create_flow_keyboard(),
+                )
+                return
+            flow.llm_seat_count = llm_seats
+            await self._send_message(
+                chat_id,
+                f"Enter big blind. Type Default for {self.config.big_blind}.",
+                self._build_create_flow_keyboard(),
+            )
+            return
+
+        if flow.big_blind is None:
+            big_blind = self._parse_int_or_default(text, default=self.config.big_blind)
+            if big_blind is None or big_blind <= 0:
+                await self._send_message(
+                    chat_id,
+                    "Enter a valid positive big blind, or type Default.",
+                    self._build_create_flow_keyboard(),
+                )
+                return
+            flow.big_blind = big_blind
+            await self._send_message(
+                chat_id,
+                f"Enter small blind. Type Default for {self._default_small_blind(big_blind)}.",
+                self._build_create_flow_keyboard(),
+            )
+            return
+
+        if flow.small_blind is None:
+            assert flow.big_blind is not None
+            small_blind = self._parse_int_or_default(
+                text,
+                default=self._default_small_blind(flow.big_blind),
+            )
+            if small_blind is None or small_blind <= 0 or small_blind > flow.big_blind:
+                await self._send_message(
+                    chat_id,
+                    f"Enter a valid small blind between 1 and {flow.big_blind}, or type Default.",
+                    self._build_create_flow_keyboard(),
+                )
+                return
+            flow.small_blind = small_blind
+            await self._send_message(
+                chat_id,
+                f"Enter starting stack. Type Default for {self._default_starting_stack(flow.big_blind)}.",
+                self._build_create_flow_keyboard(),
+            )
+            return
+
         assert flow.total_seats is not None
-        if llm_seats is None or not 0 <= llm_seats < flow.total_seats:
-            await self._send_message(chat_id, f"Enter a valid LLM seat count between 0 and {flow.total_seats - 1}.", self._build_create_flow_keyboard())
+        assert flow.llm_seat_count is not None
+        assert flow.big_blind is not None
+        assert flow.small_blind is not None
+        starting_stack = self._parse_int_or_default(
+            text,
+            default=self._default_starting_stack(flow.big_blind),
+        )
+        if starting_stack is None or starting_stack <= 0:
+            await self._send_message(
+                chat_id,
+                "Enter a valid positive starting stack, or type Default.",
+                self._build_create_flow_keyboard(),
+            )
             return
 
-        request = TelegramTableCreateRequest(total_seats=flow.total_seats, llm_seat_count=llm_seats)
+        request = TelegramTableCreateRequest(
+            total_seats=flow.total_seats,
+            llm_seat_count=flow.llm_seat_count,
+            small_blind=flow.small_blind,
+            big_blind=flow.big_blind,
+            starting_stack=starting_stack,
+        )
         try:
             session = self.registry.create_waiting_table(
                 creator_user_id=user_id,
@@ -496,9 +583,9 @@ class TelegramApp:
 
         engine = PokerEngine.create_table(
             TableConfig(
-                small_blind=self.config.small_blind,
-                big_blind=self.config.big_blind,
-                starting_stack=self.config.starting_stack,
+                small_blind=session.request.small_blind,
+                big_blind=session.request.big_blind,
+                starting_stack=session.request.starting_stack,
             ),
             seat_configs,
         )
@@ -581,6 +668,8 @@ class TelegramApp:
             f"Total seats: {session.total_seats}",
             f"Telegram seats: {session.telegram_seat_count}",
             f"LLM seats: {session.llm_seat_count}",
+            f"Blinds: {session.request.small_blind}/{session.request.big_blind}",
+            f"Starting stack: {session.request.starting_stack}",
         ]
         if session.has_multiple_human_players:
             lines.append(f"Join with: /join {session.table_id}")
@@ -594,6 +683,8 @@ class TelegramApp:
         lines = [
             headline,
             f"Telegram seats: {session.human_player_count}/{session.telegram_seat_count}.",
+            f"Blinds: {session.request.small_blind}/{session.request.big_blind}.",
+            f"Starting stack: {session.request.starting_stack}.",
         ]
         if session.is_full():
             lines.append(self._format_ready_to_start_hint(session))
@@ -617,6 +708,8 @@ class TelegramApp:
                 f"Status: {status.status.value}",
                 f"Creator: {status.creator_user_id}",
                 f"Seats: {status.total_seats}",
+                f"Blinds: {status.small_blind}/{status.big_blind}",
+                f"Starting stack: {status.starting_stack}",
                 f"Telegram seats: {status.telegram_seats_claimed}/{status.telegram_seats_total}",
                 f"LLM seats: {status.llm_seat_count}",
                 f"Joined users: {', '.join(str(user_id) for user_id in status.joined_user_ids) or '-'}",
@@ -629,6 +722,20 @@ class TelegramApp:
             return int(raw.strip())
         except ValueError:
             return None
+
+    @staticmethod
+    def _parse_int_or_default(raw: str, *, default: int) -> int | None:
+        if raw.strip().lower() == "default":
+            return default
+        return TelegramApp._parse_int(raw)
+
+    @staticmethod
+    def _default_small_blind(big_blind: int) -> int:
+        return max(1, big_blind // 2)
+
+    @staticmethod
+    def _default_starting_stack(big_blind: int) -> int:
+        return max(1, big_blind * 20)
 
     def _match_lobby_command(self, text: str) -> Any | None:
         normalized = text.strip().lower()

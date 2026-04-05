@@ -1,7 +1,4 @@
 [game]
-small_blind = 50
-big_blind = 100
-starting_stack = 2000
 max_players = 6
 
 [llm]

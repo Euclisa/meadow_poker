@@ -38,9 +38,6 @@ class ThoughtLoggingMode(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class GameSettings:
-    small_blind: int = 50
-    big_blind: int = 100
-    starting_stack: int = 2_000
     max_players: int = 6
     log_level: str | None = None
 
@@ -210,9 +207,6 @@ def load_project_config(path: str | Path = DEFAULT_CONFIG_PATH) -> ProjectConfig
     telegram_raw = raw.get("telegram", {})
     web_raw = raw.get("web", {})
     game = GameSettings(
-        small_blind=int(game_raw.get("small_blind", 50)),
-        big_blind=int(game_raw.get("big_blind", 100)),
-        starting_stack=int(game_raw.get("starting_stack", 2_000)),
         max_players=int(game_raw.get("max_players", 6)),
         log_level=game_raw.get("log_level"),
     )
