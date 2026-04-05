@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import pytest
 
-from poker_bot.config import LLMSettings, OpenRouterSettings
+from poker_bot.config import LLMSettings, OpenRouterSettings, ThoughtLoggingMode
 from poker_bot.players.cli import CLIPlayerAgent
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
 from poker_bot.players.rendering import (
@@ -611,7 +611,7 @@ def test_llm_player_agent_logs_thoughts_when_enabled(caplog: pytest.LogCaptureFi
         "p1",
         client=LLMGameClient(settings=LLMSettings(model="gpt-test", api_key="test"), client=client),
         recent_hand_count=1,
-        log_thoughts=True,
+        thought_logging=ThoughtLoggingMode.FULL,
     )
 
     update = PlayerUpdate(
@@ -671,6 +671,77 @@ def test_llm_player_agent_logs_thoughts_when_enabled(caplog: pytest.LogCaptureFi
 
     messages = [record.getMessage() for record in caplog.records if record.name == "poker_bot.players.llm"]
     assert any("type=hand_summary" in message and "Hand #1" in message for message in messages)
+    assert any("type=reflection_note" in message and "Updated note" in message for message in messages)
+
+
+def test_llm_player_agent_logs_only_reflection_notes_in_notes_mode(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = RecordingOpenAIClient(outputs=["Updated note"])
+    agent = LLMPlayerAgent(
+        "p1",
+        client=LLMGameClient(settings=LLMSettings(model="gpt-test", api_key="test"), client=client),
+        recent_hand_count=1,
+        thought_logging=ThoughtLoggingMode.NOTES,
+    )
+
+    update = PlayerUpdate(
+        update_type=PlayerUpdateType.HAND_COMPLETED,
+        events=(
+            GameEvent("hand_started", {"hand_number": 1}),
+            GameEvent("blind_posted", {"seat_id": "p2", "blind": "big", "amount": 100}),
+            GameEvent("action_applied", {"seat_id": "p1", "action": "call", "amount": 100}),
+            GameEvent("pot_awarded", {"seat_id": "p1", "amount": 200}),
+            GameEvent("hand_completed", {"hand_number": 1}),
+        ),
+        public_table_view=PublicTableView(
+            hand_number=1,
+            phase=GamePhase.HAND_COMPLETE,
+            board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
+            pot_total=200,
+            current_bet=0,
+            dealer_seat_id="p1",
+            acting_seat_id=None,
+            small_blind=50,
+            big_blind=100,
+            seats=(
+                SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
+                SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
+            ),
+        ),
+        player_view=PlayerView(
+            seat_id="p1",
+            player_name="Hero",
+            hole_cards=("As", "Kd"),
+            stack=2100,
+            contribution=100,
+            position="dealer",
+            to_call=0,
+            public_table=PublicTableView(
+                hand_number=1,
+                phase=GamePhase.HAND_COMPLETE,
+                board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
+                pot_total=200,
+                current_bet=0,
+                dealer_seat_id="p1",
+                acting_seat_id=None,
+                small_blind=50,
+                big_blind=100,
+                seats=(
+                    SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
+                    SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
+                ),
+            ),
+        ),
+        acting_seat_id=None,
+        is_your_turn=False,
+    )
+
+    with caplog.at_level("INFO"):
+        asyncio.run(agent.notify_update(update))
+
+    messages = [record.getMessage() for record in caplog.records if record.name == "poker_bot.players.llm"]
+    assert not any("type=hand_summary" in message for message in messages)
     assert any("type=reflection_note" in message and "Updated note" in message for message in messages)
 
 

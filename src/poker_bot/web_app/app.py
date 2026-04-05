@@ -322,7 +322,7 @@ class WebApp:
                 seat_id=seat_id,
                 client=self._llm_client_factory(),
                 recent_hand_count=self.config.llm.recent_hand_count,
-                log_thoughts=self.config.llm.log_thoughts,
+                thought_logging=self.config.llm.thought_logging,
             )
 
         engine = PokerEngine.create_table(

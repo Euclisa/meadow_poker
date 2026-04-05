@@ -76,7 +76,7 @@ async def run_cli_mode(config: ProjectConfig, *, players_spec: str, max_hands: i
                 seat_id,
                 client=llm_client,
                 recent_hand_count=config.llm.recent_hand_count,
-                log_thoughts=config.llm.log_thoughts,
+                thought_logging=config.llm.thought_logging,
             )
         else:
             seats.append(SeatConfig(seat_id=seat_id, name=player_entry))

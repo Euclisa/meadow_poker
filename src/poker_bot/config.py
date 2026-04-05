@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar, Mapping, Self
 import tomllib
@@ -9,6 +10,30 @@ from urllib.parse import urlparse
 
 
 DEFAULT_CONFIG_PATH = Path("config/config.toml")
+
+
+class ThoughtLoggingMode(StrEnum):
+    OFF = "off"
+    NOTES = "notes"
+    FULL = "full"
+
+    @classmethod
+    def from_config(cls, raw_mode: object) -> Self:
+        if raw_mode is not None:
+            mode = str(raw_mode).strip().lower()
+            try:
+                return cls(mode)
+            except ValueError as exc:
+                raise ValueError("llm.thought_logging must be one of: off, notes, full") from exc
+        return cls.OFF
+
+    @property
+    def logs_hand_summaries(self) -> bool:
+        return self is self.FULL
+
+    @property
+    def logs_reflection_notes(self) -> bool:
+        return self in {self.NOTES, self.FULL}
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,11 +96,13 @@ class LLMSettings:
     timeout: float = 30.0
     max_output_tokens: int | None = None
     recent_hand_count: int = 5
-    log_thoughts: bool = False
+    thought_logging: ThoughtLoggingMode = ThoughtLoggingMode.OFF
     provider_settings: LLMProviderSettings | None = None
 
     @classmethod
     def from_config(cls, raw: Mapping[str, object]) -> Self:
+        if "log_thoughts" in raw:
+            raise ValueError("llm.log_thoughts has been removed; use llm.thought_logging")
         base_url = _optional_str(raw.get("base_url"))
         provider_candidates = _parse_llm_provider_settings(raw)
         matching_providers = tuple(
@@ -91,7 +118,7 @@ class LLMSettings:
             timeout=float(raw.get("timeout", 30.0)),
             max_output_tokens=_optional_int(raw.get("max_output_tokens")),
             recent_hand_count=int(raw.get("recent_hand_count", 5)),
-            log_thoughts=bool(raw.get("log_thoughts", False)),
+            thought_logging=ThoughtLoggingMode.from_config(raw.get("thought_logging")),
             provider_settings=matching_providers[0] if matching_providers else None,
         )
 

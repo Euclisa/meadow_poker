@@ -6,7 +6,7 @@ from json import JSONDecodeError
 from dataclasses import dataclass
 from typing import Any
 
-from poker_bot.config import LLMSettings
+from poker_bot.config import LLMSettings, ThoughtLoggingMode
 from poker_bot.players.base import PlayerAgent
 from poker_bot.players.rendering import render_events, render_player_update
 from poker_bot.types import (
@@ -175,7 +175,7 @@ class LLMPlayerAgent(PlayerAgent):
         client: LLMGameClient,
         system_prompt: str | None = None,
         recent_hand_count: int = 5,
-        log_thoughts: bool = False,
+        thought_logging: ThoughtLoggingMode = ThoughtLoggingMode.OFF,
     ) -> None:
         self.seat_id = seat_id
         self.client = client
@@ -184,7 +184,7 @@ class LLMPlayerAgent(PlayerAgent):
             "Do not include reasoning, explanations, markdown, code fences, or surrounding text."
         )
         self.recent_hand_count = max(0, recent_hand_count)
-        self.log_thoughts = log_thoughts
+        self.thought_logging = thought_logging
         self._current_hand_number: int | None = None
         self._history: list[dict[str, str]] = []
         self._buffered_updates: list[PlayerUpdate] = []
@@ -343,7 +343,7 @@ class LLMPlayerAgent(PlayerAgent):
             self._tracked_hand_number = None
             return
         summary = self._summarize_hand(self._hand_updates)
-        if self.log_thoughts:
+        if self.thought_logging.logs_hand_summaries:
             logger.info("LLM thought seat_id=%s type=hand_summary\n%s", self.seat_id, summary)
         self._pending_hand_summaries.append(summary)
         if len(self._pending_hand_summaries) >= self.recent_hand_count:
@@ -381,7 +381,7 @@ class LLMPlayerAgent(PlayerAgent):
             logger.warning("LLM reflection note update failed seat_id=%s", self.seat_id)
             return
         self._reflection_note = updated_note.strip()
-        if self.log_thoughts and self._reflection_note:
+        if self.thought_logging.logs_reflection_notes and self._reflection_note:
             logger.info(
                 "LLM thought seat_id=%s type=reflection_note\n%s",
                 self.seat_id,

@@ -27,7 +27,7 @@ All runtime configuration lives in `config/config.toml`.
 - `[llm]` configures the OpenAI-compatible backend used by LLM seats.
   - `max_output_tokens` is optional. If omitted, no output-token cap is sent to the provider.
   - `recent_hand_count` controls how many completed hand summaries trigger an internal reflection-note update for each LLM seat.
-  - `log_thoughts` writes completed-hand summaries and reflection-note updates to the app log at `INFO`.
+  - `thought_logging` controls LLM thought logging: `off`, `notes`, or `full`.
   - Provider-specific subsections such as `[llm.openrouter]` are resolved from `llm.base_url`, so only the settings for the active gateway are applied.
   - `[llm.openrouter].sort` accepts `price`, `throughput`, or `latency` and is sent as OpenRouter `provider.sort`.
 - `[telegram]` configures the Telegram bot runtime.

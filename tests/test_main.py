@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from poker_bot.config import GameSettings, LLMSettings, ProjectConfig, TelegramSettings
+from poker_bot.config import GameSettings, LLMSettings, ProjectConfig, TelegramSettings, ThoughtLoggingMode
 from poker_bot.main import run_cli_mode
 import poker_bot.main as main_module
 
@@ -29,12 +29,12 @@ class RecordingLLMPlayerAgent:
         seat_id: str,
         client: RecordingLLMGameClient,
         recent_hand_count: int = 5,
-        log_thoughts: bool = False,
+        thought_logging: ThoughtLoggingMode = ThoughtLoggingMode.OFF,
     ) -> None:
         self.seat_id = seat_id
         self.client = client
         self.recent_hand_count = recent_hand_count
-        self.log_thoughts = log_thoughts
+        self.thought_logging = thought_logging
 
 
 class RecordingOrchestrator:
@@ -81,13 +81,13 @@ def test_run_cli_mode_assigns_human_names_and_bot_seats(monkeypatch: pytest.Monk
     assert isinstance(orchestrator.agents["p2"], RecordingLLMPlayerAgent)
     assert isinstance(orchestrator.agents["p3"], RecordingCLIPlayerAgent)
     assert orchestrator.agents["p2"].recent_hand_count == 5
-    assert orchestrator.agents["p2"].log_thoughts is False
+    assert orchestrator.agents["p2"].thought_logging is ThoughtLoggingMode.OFF
     assert captured["max_hands"] == 7
     assert captured["close_agents"] is True
     assert captured["after_hand"] is None
 
 
-def test_run_cli_mode_passes_llm_log_thoughts(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_cli_mode_passes_llm_thought_logging(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_run_table(orchestrator, *, max_hands: int, close_agents: bool = True, after_hand=None) -> None:
         del orchestrator, max_hands, close_agents, after_hand
 
@@ -99,7 +99,11 @@ def test_run_cli_mode_passes_llm_log_thoughts(monkeypatch: pytest.MonkeyPatch) -
 
     config = ProjectConfig(
         game=GameSettings(),
-        llm=LLMSettings(model="gpt-test", api_key="test", log_thoughts=True),
+        llm=LLMSettings(
+            model="gpt-test",
+            api_key="test",
+            thought_logging=ThoughtLoggingMode.NOTES,
+        ),
         telegram=TelegramSettings(),
     )
 
@@ -107,8 +111,8 @@ def test_run_cli_mode_passes_llm_log_thoughts(monkeypatch: pytest.MonkeyPatch) -
 
     orchestrator = RecordingOrchestrator.last_instance
     assert orchestrator is not None
-    assert orchestrator.agents["p2"].log_thoughts is True
-    assert orchestrator.agents["p2"].client.settings.log_thoughts is True
+    assert orchestrator.agents["p2"].thought_logging is ThoughtLoggingMode.NOTES
+    assert orchestrator.agents["p2"].client.settings.thought_logging is ThoughtLoggingMode.NOTES
 
 
 def test_run_cli_mode_rejects_duplicate_human_names_case_insensitively() -> None:
