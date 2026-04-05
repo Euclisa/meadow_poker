@@ -7,6 +7,7 @@ from poker_bot.players.base import PlayerAgent
 from poker_bot.poker.engine import PokerEngine
 from poker_bot.table_runner import run_table
 from poker_bot.types import (
+    ActionType,
     ActionValidationError,
     GameEvent,
     GamePhase,
@@ -170,7 +171,18 @@ class GameOrchestrator:
                 acting_seat,
                 validation_error=pending_error,
             )
-            action = await agent.request_action(decision)
+            try:
+                action = await agent.request_action(decision)
+            except Exception as exc:
+                legal_types = {la.action_type for la in decision.legal_actions}
+                default_type = ActionType.CHECK if ActionType.CHECK in legal_types else ActionType.FOLD
+                action = PlayerAction(action_type=default_type)
+                logger.warning(
+                    "Bot error acting_seat=%s default_action=%s exc=%r",
+                    acting_seat,
+                    default_type,
+                    exc,
+                )
             logger.debug("Received action acting_seat=%s action=%s", acting_seat, action)
             self.last_seen_event_index[acting_seat] = len(self.event_log)
             self._pending[acting_seat].validation_error = None
