@@ -1,26 +1,6 @@
 from __future__ import annotations
 
-from poker_bot.types import GameEvent, HandRecord, HandRecordStatus, PlayerUpdate, PlayerView
-
-
-def hand_record_from_updates(
-    updates: list[PlayerUpdate],
-    *,
-    status: HandRecordStatus,
-) -> HandRecord | None:
-    if not updates:
-        return None
-    first_update = updates[0]
-    final_update = updates[-1]
-    events = tuple(event for update in updates for event in update.events)
-    return HandRecord(
-        hand_number=final_update.public_table_view.hand_number,
-        status=status,
-        events=events,
-        start_public_view=first_update.public_table_view,
-        current_public_view=final_update.public_table_view,
-        ended_in_showdown=any(event.event_type == "showdown_started" for event in events),
-    )
+from poker_bot.types import GameEvent, HandRecord, PlayerView
 
 
 def render_public_completed_hand_summary(record: HandRecord) -> str:

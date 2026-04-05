@@ -7,16 +7,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from poker_bot.config import CoachSettings, LLMSettings, ThoughtLoggingMode
-from poker_bot.hand_history import hand_record_from_updates, render_private_completed_hand_summary
+from poker_bot.hand_history import render_private_completed_hand_summary
 from poker_bot.players.base import PlayerAgent
-from poker_bot.players.rendering import render_events, render_player_update
+from poker_bot.players.rendering import render_player_update
 from poker_bot.types import (
     ActionType,
     DecisionRequest,
-    HandRecordStatus,
+    HandRecord,
     PlayerAction,
     PlayerUpdate,
     PlayerUpdateType,
+    PlayerView,
 )
 
 logger = logging.getLogger(__name__)
@@ -189,8 +190,6 @@ class LLMPlayerAgent(PlayerAgent):
         self._current_hand_number: int | None = None
         self._history: list[dict[str, str]] = []
         self._buffered_updates: list[PlayerUpdate] = []
-        self._hand_updates: list[PlayerUpdate] = []
-        self._tracked_hand_number: int | None = None
         self._pending_hand_summaries: list[str] = []
         self._reflection_note: str | None = None
 
@@ -216,22 +215,27 @@ class LLMPlayerAgent(PlayerAgent):
 
     async def notify_update(self, update: PlayerUpdate) -> None:
         if update.events:
-            self._track_hand_update(update)
             self._buffered_updates.append(update)
         if update.update_type in {PlayerUpdateType.HAND_COMPLETED, PlayerUpdateType.TABLE_COMPLETED}:
-            if update.update_type == PlayerUpdateType.HAND_COMPLETED:
-                await self._store_completed_hand_summary()
             self._current_hand_number = None
             self._history.clear()
             self._buffered_updates.clear()
         return None
 
+    async def on_hand_completed(self, record: HandRecord, player_view: PlayerView) -> None:
+        if self.recent_hand_count <= 0:
+            return
+        summary = render_private_completed_hand_summary(record, player_view)
+        if self.thought_logging.logs_hand_summaries:
+            logger.info("LLM thought seat_id=%s type=hand_summary\n%s", self.seat_id, summary)
+        self._pending_hand_summaries.append(summary)
+        if len(self._pending_hand_summaries) >= self.recent_hand_count:
+            await self._update_reflection_note()
+
     async def close(self) -> None:
         self._current_hand_number = None
         self._history.clear()
         self._buffered_updates.clear()
-        self._hand_updates.clear()
-        self._tracked_hand_number = None
         self._pending_hand_summaries.clear()
         self._reflection_note = None
         return None
@@ -330,29 +334,6 @@ class LLMPlayerAgent(PlayerAgent):
         if amount is not None:
             amount = int(amount)
         return PlayerAction(action_type=action_type, amount=amount)
-
-    def _track_hand_update(self, update: PlayerUpdate) -> None:
-        hand_number = update.public_table_view.hand_number
-        if self._tracked_hand_number != hand_number:
-            self._tracked_hand_number = hand_number
-            self._hand_updates = []
-        self._hand_updates.append(update)
-
-    async def _store_completed_hand_summary(self) -> None:
-        if not self._hand_updates or self.recent_hand_count <= 0:
-            self._hand_updates.clear()
-            self._tracked_hand_number = None
-            return
-        record = hand_record_from_updates(self._hand_updates, status=HandRecordStatus.COMPLETED)
-        assert record is not None
-        summary = render_private_completed_hand_summary(record, self._hand_updates[-1].player_view)
-        if self.thought_logging.logs_hand_summaries:
-            logger.info("LLM thought seat_id=%s type=hand_summary\n%s", self.seat_id, summary)
-        self._pending_hand_summaries.append(summary)
-        if len(self._pending_hand_summaries) >= self.recent_hand_count:
-            await self._update_reflection_note()
-        self._hand_updates.clear()
-        self._tracked_hand_number = None
 
     async def _update_reflection_note(self) -> None:
         messages = [{"role": "developer", "content": self._REFLECTION_PROMPT}]

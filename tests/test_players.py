@@ -18,6 +18,8 @@ from poker_bot.types import (
     DecisionRequest,
     GameEvent,
     GamePhase,
+    HandRecord,
+    HandRecordStatus,
     LegalAction,
     PlayerAction,
     PlayerUpdate,
@@ -79,6 +81,49 @@ def make_player_update(*, is_your_turn: bool = False) -> PlayerUpdate:
         acting_seat_id=decision.acting_seat_id,
         is_your_turn=is_your_turn,
     )
+
+
+def make_completed_hand_record(hand_number: int) -> tuple[HandRecord, PlayerView]:
+    public_view = PublicTableView(
+        hand_number=hand_number,
+        phase=GamePhase.HAND_COMPLETE,
+        board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
+        pot_total=200,
+        current_bet=0,
+        dealer_seat_id="p1",
+        acting_seat_id=None,
+        small_blind=50,
+        big_blind=100,
+        seats=(
+            SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
+            SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
+        ),
+    )
+    player_view = PlayerView(
+        seat_id="p1",
+        player_name="Hero",
+        hole_cards=("As", "Kd"),
+        stack=2100,
+        contribution=100,
+        position="dealer",
+        to_call=0,
+        public_table=public_view,
+    )
+    record = HandRecord(
+        hand_number=hand_number,
+        status=HandRecordStatus.COMPLETED,
+        events=(
+            GameEvent("hand_started", {"hand_number": hand_number}),
+            GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
+            GameEvent("showdown_revealed", {"seat_id": "p1", "hole_cards": ("As", "Kd"), "hand_label": "straight, ace-high"}),
+            GameEvent("pot_awarded", {"seat_id": "p1", "amount": 200}),
+            GameEvent("hand_completed", {"hand_number": hand_number}),
+        ),
+        start_public_view=public_view,
+        current_public_view=public_view,
+        ended_in_showdown=True,
+    )
+    return record, player_view
 
 
 class FakeResponsesAPI:
@@ -330,6 +375,8 @@ def test_llm_player_agent_keeps_history_within_hand_and_resets_next_hand() -> No
         legal_actions=(LegalAction(ActionType.FOLD), LegalAction(ActionType.CALL)),
     )
 
+    hand1_record, hand1_player_view = make_completed_hand_record(1)
+
     async def exercise() -> None:
         await agent.request_action(first)
         await agent.notify_update(
@@ -346,20 +393,14 @@ def test_llm_player_agent_keeps_history_within_hand_and_resets_next_hand() -> No
         await agent.notify_update(
             PlayerUpdate(
                 update_type=PlayerUpdateType.HAND_COMPLETED,
-                events=(
-                    GameEvent("hand_started", {"hand_number": 1}),
-                    GameEvent("blind_posted", {"seat_id": "p2", "blind": "big", "amount": 100}),
-                    GameEvent("showdown_started", {"board_cards": ("2c", "7d", "8h", "9s", "Tc")}),
-                    GameEvent("showdown_revealed", {"seat_id": "p1", "hole_cards": ("As", "Kd"), "hand_label": "ace-high"}),
-                    GameEvent("pot_awarded", {"seat_id": "p2", "amount": 200}),
-                    GameEvent("hand_completed", {"hand_number": 1}),
-                ),
+                events=(GameEvent("hand_completed", {"hand_number": 1}),),
                 public_table_view=second.public_table_view,
                 player_view=second.player_view,
                 acting_seat_id=None,
                 is_your_turn=False,
             )
         )
+        await agent.on_hand_completed(hand1_record, hand1_player_view)
         await agent.request_action(third)
 
     asyncio.run(exercise())
@@ -395,51 +436,7 @@ def test_llm_player_agent_reflects_and_clears_pending_summaries() -> None:
         recent_hand_count=1,
     )
 
-    def make_update(hand_number: int) -> PlayerUpdate:
-        public_view = PublicTableView(
-            hand_number=hand_number,
-            phase=GamePhase.HAND_COMPLETE,
-            board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
-            pot_total=200,
-            current_bet=0,
-            dealer_seat_id="p1",
-            acting_seat_id=None,
-            small_blind=50,
-            big_blind=100,
-            seats=(
-                SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
-                SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
-            ),
-        )
-        player_view = PlayerView(
-            seat_id="p1",
-            player_name="Hero",
-            hole_cards=("As", "Kd"),
-            stack=2100,
-            contribution=100,
-            position="dealer",
-            to_call=0,
-            public_table=public_view,
-        )
-        return PlayerUpdate(
-            update_type=PlayerUpdateType.HAND_COMPLETED,
-            events=(
-                GameEvent("hand_started", {"hand_number": hand_number}),
-                GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
-                GameEvent("showdown_revealed", {"seat_id": "p1", "hole_cards": ("As", "Kd"), "hand_label": "straight, ace-high"}),
-                GameEvent("pot_awarded", {"seat_id": "p1", "amount": 200}),
-                GameEvent("hand_completed", {"hand_number": hand_number}),
-            ),
-            public_table_view=public_view,
-            player_view=player_view,
-            acting_seat_id=None,
-            is_your_turn=False,
-        )
-
-    async def exercise() -> None:
-        await agent.notify_update(make_update(1))
-
-    asyncio.run(exercise())
+    asyncio.run(agent.on_hand_completed(*make_completed_hand_record(1)))
 
     assert agent._reflection_note == "Initial note"
     assert agent._pending_hand_summaries == []
@@ -454,48 +451,8 @@ def test_llm_player_agent_uses_previous_note_during_later_reflection() -> None:
     )
 
     async def exercise() -> None:
-        await agent.notify_update(make_update(1))
-        await agent.notify_update(make_update(2))
-
-    def make_update(hand_number: int) -> PlayerUpdate:
-        public_view = PublicTableView(
-            hand_number=hand_number,
-            phase=GamePhase.HAND_COMPLETE,
-            board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
-            pot_total=200,
-            current_bet=0,
-            dealer_seat_id="p1",
-            acting_seat_id=None,
-            small_blind=50,
-            big_blind=100,
-            seats=(
-                SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
-                SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
-            ),
-        )
-        return PlayerUpdate(
-            update_type=PlayerUpdateType.HAND_COMPLETED,
-            events=(
-                GameEvent("hand_started", {"hand_number": hand_number}),
-                GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
-                GameEvent("showdown_revealed", {"seat_id": "p1", "hole_cards": ("As", "Kd"), "hand_label": "straight, ace-high"}),
-                GameEvent("pot_awarded", {"seat_id": "p1", "amount": 200}),
-                GameEvent("hand_completed", {"hand_number": hand_number}),
-            ),
-            public_table_view=public_view,
-            player_view=PlayerView(
-                seat_id="p1",
-                player_name="Hero",
-                hole_cards=("As", "Kd"),
-                stack=2100,
-                contribution=100,
-                position="dealer",
-                to_call=0,
-                public_table=public_view,
-            ),
-            acting_seat_id=None,
-            is_your_turn=False,
-        )
+        await agent.on_hand_completed(*make_completed_hand_record(1))
+        await agent.on_hand_completed(*make_completed_hand_record(2))
 
     asyncio.run(exercise())
 
@@ -513,46 +470,7 @@ def test_llm_player_agent_keeps_pending_summaries_when_reflection_fails() -> Non
         recent_hand_count=1,
     )
 
-    public_view = PublicTableView(
-        hand_number=1,
-        phase=GamePhase.HAND_COMPLETE,
-        board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
-        pot_total=200,
-        current_bet=0,
-        dealer_seat_id="p1",
-        acting_seat_id=None,
-        small_blind=50,
-        big_blind=100,
-        seats=(
-            SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
-            SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
-        ),
-    )
-    update = PlayerUpdate(
-        update_type=PlayerUpdateType.HAND_COMPLETED,
-        events=(
-            GameEvent("hand_started", {"hand_number": 1}),
-            GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
-            GameEvent("showdown_revealed", {"seat_id": "p1", "hole_cards": ("As", "Kd"), "hand_label": "straight, ace-high"}),
-            GameEvent("pot_awarded", {"seat_id": "p1", "amount": 200}),
-            GameEvent("hand_completed", {"hand_number": 1}),
-        ),
-        public_table_view=public_view,
-        player_view=PlayerView(
-            seat_id="p1",
-            player_name="Hero",
-            hole_cards=("As", "Kd"),
-            stack=2100,
-            contribution=100,
-            position="dealer",
-            to_call=0,
-            public_table=public_view,
-        ),
-        acting_seat_id=None,
-        is_your_turn=False,
-    )
-
-    asyncio.run(agent.notify_update(update))
+    asyncio.run(agent.on_hand_completed(*make_completed_hand_record(1)))
 
     assert agent._reflection_note is None
     assert len(agent._pending_hand_summaries) == 1
@@ -566,40 +484,7 @@ def test_llm_player_agent_recent_hand_count_zero_disables_reflection() -> None:
         recent_hand_count=0,
     )
 
-    public_view = PublicTableView(
-        hand_number=1,
-        phase=GamePhase.HAND_COMPLETE,
-        board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
-        pot_total=200,
-        current_bet=0,
-        dealer_seat_id="p1",
-        acting_seat_id=None,
-        small_blind=50,
-        big_blind=100,
-        seats=(
-            SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
-            SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
-        ),
-    )
-    update = PlayerUpdate(
-        update_type=PlayerUpdateType.HAND_COMPLETED,
-        events=(GameEvent("hand_started", {"hand_number": 1}), GameEvent("hand_completed", {"hand_number": 1})),
-        public_table_view=public_view,
-        player_view=PlayerView(
-            seat_id="p1",
-            player_name="Hero",
-            hole_cards=("As", "Kd"),
-            stack=2100,
-            contribution=100,
-            position="dealer",
-            to_call=0,
-            public_table=public_view,
-        ),
-        acting_seat_id=None,
-        is_your_turn=False,
-    )
-
-    asyncio.run(agent.notify_update(update))
+    asyncio.run(agent.on_hand_completed(*make_completed_hand_record(1)))
 
     assert client.chat.completions.calls == []
     assert agent._pending_hand_summaries == []
@@ -614,60 +499,8 @@ def test_llm_player_agent_logs_thoughts_when_enabled(caplog: pytest.LogCaptureFi
         thought_logging=ThoughtLoggingMode.FULL,
     )
 
-    update = PlayerUpdate(
-        update_type=PlayerUpdateType.HAND_COMPLETED,
-        events=(
-            GameEvent("hand_started", {"hand_number": 1}),
-            GameEvent("blind_posted", {"seat_id": "p2", "blind": "big", "amount": 100}),
-            GameEvent("action_applied", {"seat_id": "p1", "action": "call", "amount": 100}),
-            GameEvent("pot_awarded", {"seat_id": "p1", "amount": 200}),
-            GameEvent("hand_completed", {"hand_number": 1}),
-        ),
-        public_table_view=PublicTableView(
-            hand_number=1,
-            phase=GamePhase.HAND_COMPLETE,
-            board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
-            pot_total=200,
-            current_bet=0,
-            dealer_seat_id="p1",
-            acting_seat_id=None,
-            small_blind=50,
-            big_blind=100,
-            seats=(
-                SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
-                SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
-            ),
-        ),
-        player_view=PlayerView(
-            seat_id="p1",
-            player_name="Hero",
-            hole_cards=("As", "Kd"),
-            stack=2100,
-            contribution=100,
-            position="dealer",
-            to_call=0,
-            public_table=PublicTableView(
-                hand_number=1,
-                phase=GamePhase.HAND_COMPLETE,
-                board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
-                pot_total=200,
-                current_bet=0,
-                dealer_seat_id="p1",
-                acting_seat_id=None,
-                small_blind=50,
-                big_blind=100,
-                seats=(
-                    SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
-                    SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
-                ),
-            ),
-        ),
-        acting_seat_id=None,
-        is_your_turn=False,
-    )
-
     with caplog.at_level("INFO"):
-        asyncio.run(agent.notify_update(update))
+        asyncio.run(agent.on_hand_completed(*make_completed_hand_record(1)))
 
     messages = [record.getMessage() for record in caplog.records if record.name == "poker_bot.players.llm"]
     assert any("type=hand_summary" in message and "Hand #1" in message for message in messages)
@@ -685,60 +518,8 @@ def test_llm_player_agent_logs_only_reflection_notes_in_notes_mode(
         thought_logging=ThoughtLoggingMode.NOTES,
     )
 
-    update = PlayerUpdate(
-        update_type=PlayerUpdateType.HAND_COMPLETED,
-        events=(
-            GameEvent("hand_started", {"hand_number": 1}),
-            GameEvent("blind_posted", {"seat_id": "p2", "blind": "big", "amount": 100}),
-            GameEvent("action_applied", {"seat_id": "p1", "action": "call", "amount": 100}),
-            GameEvent("pot_awarded", {"seat_id": "p1", "amount": 200}),
-            GameEvent("hand_completed", {"hand_number": 1}),
-        ),
-        public_table_view=PublicTableView(
-            hand_number=1,
-            phase=GamePhase.HAND_COMPLETE,
-            board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
-            pot_total=200,
-            current_bet=0,
-            dealer_seat_id="p1",
-            acting_seat_id=None,
-            small_blind=50,
-            big_blind=100,
-            seats=(
-                SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
-                SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
-            ),
-        ),
-        player_view=PlayerView(
-            seat_id="p1",
-            player_name="Hero",
-            hole_cards=("As", "Kd"),
-            stack=2100,
-            contribution=100,
-            position="dealer",
-            to_call=0,
-            public_table=PublicTableView(
-                hand_number=1,
-                phase=GamePhase.HAND_COMPLETE,
-                board_cards=("As", "Kh", "Qd", "Jc", "Tc"),
-                pot_total=200,
-                current_bet=0,
-                dealer_seat_id="p1",
-                acting_seat_id=None,
-                small_blind=50,
-                big_blind=100,
-                seats=(
-                    SeatSnapshot("p1", "Hero", 2100, 100, False, False, True, "dealer"),
-                    SeatSnapshot("p2", "Villain", 1900, 100, False, False, True, "big_blind"),
-                ),
-            ),
-        ),
-        acting_seat_id=None,
-        is_your_turn=False,
-    )
-
     with caplog.at_level("INFO"):
-        asyncio.run(agent.notify_update(update))
+        asyncio.run(agent.on_hand_completed(*make_completed_hand_record(1)))
 
     messages = [record.getMessage() for record in caplog.records if record.name == "poker_bot.players.llm"]
     assert not any("type=hand_summary" in message for message in messages)

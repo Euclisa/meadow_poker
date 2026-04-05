@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from poker_bot.types import DecisionRequest, PlayerAction, PlayerUpdate
+from poker_bot.types import DecisionRequest, HandRecord, PlayerAction, PlayerUpdate, PlayerView
 
 
 class PlayerAgent(ABC):
@@ -15,6 +15,9 @@ class PlayerAgent(ABC):
     @abstractmethod
     async def notify_update(self, update: PlayerUpdate) -> None:
         raise NotImplementedError
+
+    async def on_hand_completed(self, record: HandRecord, player_view: PlayerView) -> None:
+        pass
 
     @abstractmethod
     async def close(self) -> None:

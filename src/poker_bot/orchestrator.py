@@ -32,6 +32,7 @@ class GameOrchestrator:
         self.engine = engine
         self.player_agents = player_agents
         self.event_log: list[GameEvent] = []
+        self.completed_hands: list[HandRecord] = []
         self.last_seen_event_index = {seat_id: 0 for seat_id in player_agents}
         self._pending = {seat_id: _PendingSeatState() for seat_id in player_agents}
         self._stop_requested = False
@@ -100,6 +101,10 @@ class GameOrchestrator:
         )
         hand_number = hand_started.payload["hand_number"] if hand_started is not None else None
         completed_hand = self._finalize_current_hand()
+        if completed_hand is not None:
+            for seat_id, agent in self.player_agents.items():
+                player_view = self.engine.get_player_view(seat_id)
+                await agent.on_hand_completed(completed_hand, player_view)
         return HandRunResult(
             started=True,
             hand_number=hand_number,
@@ -232,6 +237,7 @@ class GameOrchestrator:
             current_public_view=self.engine.get_public_table_view(),
             ended_in_showdown=self._current_hand_ended_in_showdown,
         )
+        self.completed_hands.append(record)
         self._current_hand_event_index = None
         self._current_hand_start_view = None
         self._current_hand_number = None

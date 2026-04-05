@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.base import PlayerAgent
@@ -25,6 +26,7 @@ class ScriptedAgent(PlayerAgent):
         self.decisions: list[DecisionRequest] = []
         self.update_counts_at_decision: list[int] = []
         self.updates: list[PlayerUpdate] = []
+        self.completed_hand_records: list[tuple] = []
         self.closed = False
 
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
@@ -36,6 +38,9 @@ class ScriptedAgent(PlayerAgent):
 
     async def notify_update(self, update: PlayerUpdate) -> None:
         self.updates.append(update)
+
+    async def on_hand_completed(self, record: Any, player_view: Any) -> None:
+        self.completed_hand_records.append((record, player_view))
 
     async def close(self) -> None:
         self.closed = True
@@ -310,3 +315,39 @@ def test_orchestrator_exposes_live_and_completed_hand_records() -> None:
     assert result.completed_hand.ended_in_showdown is True
     assert result.completed_hand.current_public_view.phase.value == "hand_complete"
     assert orchestrator.current_hand_record is None
+
+
+def test_orchestrator_stores_completed_hands_and_notifies_agents() -> None:
+    agent_one = ScriptedAgent(
+        "p1",
+        actions=[
+            PlayerAction(ActionType.CALL),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+        ],
+    )
+    agent_two = ScriptedAgent(
+        "p2",
+        actions=[
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+        ],
+    )
+    orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
+
+    asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
+
+    assert len(orchestrator.completed_hands) == 1
+    record = orchestrator.completed_hands[0]
+    assert record.status is HandRecordStatus.COMPLETED
+    assert record.hand_number == 1
+
+    assert len(agent_one.completed_hand_records) == 1
+    assert len(agent_two.completed_hand_records) == 1
+    assert agent_one.completed_hand_records[0][0] is record
+    assert agent_two.completed_hand_records[0][0] is record
+    assert agent_one.completed_hand_records[0][1].seat_id == "p1"
+    assert agent_two.completed_hand_records[0][1].seat_id == "p2"
