@@ -10,6 +10,8 @@ from poker_bot.types import (
     ActionValidationError,
     GameEvent,
     GamePhase,
+    HandRecord,
+    HandRecordStatus,
     HandRunResult,
     PlayerUpdate,
     PlayerUpdateType,
@@ -33,6 +35,10 @@ class GameOrchestrator:
         self.last_seen_event_index = {seat_id: 0 for seat_id in player_agents}
         self._pending = {seat_id: _PendingSeatState() for seat_id in player_agents}
         self._stop_requested = False
+        self._current_hand_event_index: int | None = None
+        self._current_hand_start_view = None
+        self._current_hand_number: int | None = None
+        self._current_hand_ended_in_showdown = False
 
         for seat_id in player_agents:
             engine.get_player_view(seat_id)
@@ -42,6 +48,23 @@ class GameOrchestrator:
 
     async def run(self, max_hands: int | None = None, close_agents: bool = True) -> None:
         await run_table(self, max_hands=max_hands, close_agents=close_agents)
+
+    @property
+    def current_hand_record(self) -> HandRecord | None:
+        if (
+            self._current_hand_event_index is None
+            or self._current_hand_start_view is None
+            or self._current_hand_number is None
+        ):
+            return None
+        return HandRecord(
+            hand_number=self._current_hand_number,
+            status=HandRecordStatus.IN_PROGRESS,
+            events=tuple(self.event_log[self._current_hand_event_index :]),
+            start_public_view=self._current_hand_start_view,
+            current_public_view=self.engine.get_public_table_view(),
+            ended_in_showdown=self._current_hand_ended_in_showdown,
+        )
 
     async def play_hand(self) -> HandRunResult:
         if self._stop_requested:
@@ -67,6 +90,7 @@ class GameOrchestrator:
                 table_complete=self.engine.get_phase() == GamePhase.TABLE_COMPLETE,
                 events=tuple(self.event_log[start_index:]),
             )
+        self._begin_current_hand(start_index)
 
         await self._run_current_hand()
         hand_events = tuple(self.event_log[start_index:])
@@ -75,12 +99,14 @@ class GameOrchestrator:
             None,
         )
         hand_number = hand_started.payload["hand_number"] if hand_started is not None else None
+        completed_hand = self._finalize_current_hand()
         return HandRunResult(
             started=True,
             hand_number=hand_number,
             ended_in_showdown=any(event.event_type == "showdown_started" for event in hand_events),
             table_complete=self.engine.get_phase() == GamePhase.TABLE_COMPLETE,
             events=hand_events,
+            completed_hand=completed_hand,
         )
 
     async def close(self) -> None:
@@ -147,6 +173,8 @@ class GameOrchestrator:
             self.last_seen_event_index[seat_id] = len(self.event_log)
 
     def _append_events(self, events: tuple[GameEvent, ...]) -> None:
+        if any(event.event_type == "showdown_started" for event in events):
+            self._current_hand_ended_in_showdown = True
         self.event_log.extend(events)
 
     def _unseen_events_for(self, seat_id: str) -> tuple[GameEvent, ...]:
@@ -181,3 +209,31 @@ class GameOrchestrator:
             acting_seat_id=acting_seat_id,
             is_your_turn=is_your_turn,
         )
+
+    def _begin_current_hand(self, event_index: int) -> None:
+        public_view = self.engine.get_public_table_view()
+        self._current_hand_event_index = event_index
+        self._current_hand_start_view = public_view
+        self._current_hand_number = public_view.hand_number
+        self._current_hand_ended_in_showdown = False
+
+    def _finalize_current_hand(self) -> HandRecord | None:
+        if (
+            self._current_hand_event_index is None
+            or self._current_hand_start_view is None
+            or self._current_hand_number is None
+        ):
+            return None
+        record = HandRecord(
+            hand_number=self._current_hand_number,
+            status=HandRecordStatus.COMPLETED,
+            events=tuple(self.event_log[self._current_hand_event_index :]),
+            start_public_view=self._current_hand_start_view,
+            current_public_view=self.engine.get_public_table_view(),
+            ended_in_showdown=self._current_hand_ended_in_showdown,
+        )
+        self._current_hand_event_index = None
+        self._current_hand_start_view = None
+        self._current_hand_number = None
+        self._current_hand_ended_in_showdown = False
+        return record

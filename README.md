@@ -30,6 +30,10 @@ All runtime configuration lives in `config/config.toml`.
   - `thought_logging` controls LLM thought logging: `off`, `notes`, or `full`.
   - Provider-specific subsections such as `[llm.openrouter]` are resolved from `llm.base_url`, so only the settings for the active gateway are applied.
   - `[llm.openrouter].sort` accepts `price`, `throughput`, or `latency` and is sent as OpenRouter `provider.sort`.
+- `[coach]` configures the optional per-table LLM coach used by web and Telegram players on their turn.
+  - `enabled` turns the feature on.
+  - `recent_hand_count` controls how many completed public hand summaries trigger a rolling public table-note update.
+  - Transport fields mirror `[llm]`, including provider-specific subsections such as `[coach.openrouter]`.
 - `[telegram]` configures the Telegram bot runtime.
 - `[web]` configures the browser lobby and table runtime.
   - `host` and `port` control where the HTTP server listens.

@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 import logging
 from typing import Any
 
-from poker_bot.config import LLMSettings
+from poker_bot.coach import CoachRequestError, TableCoach
+from poker_bot.config import CoachSettings, LLMSettings
 from poker_bot.naming import BotNameAllocator
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
@@ -33,6 +34,7 @@ class TelegramAppConfig:
     starting_stack: int = 2_000
     max_players: int = 6
     llm: LLMSettings = field(default_factory=LLMSettings)
+    coach: CoachSettings = field(default_factory=CoachSettings)
     max_hands_per_table: int | None = None
 
 
@@ -57,6 +59,9 @@ class TelegramActionRouter:
             return False
         for agent in session.player_agents.values():
             if isinstance(agent, TelegramPlayerAgent) and agent.matches_user(user_id=user_id, chat_id=chat_id):
+                if agent.seat_id in session.coach_pending_seat_ids:
+                    await agent.send_private_message("Coach is still thinking. Please wait for the reply.")
+                    return True
                 return await agent.submit_text_action(user_id=user_id, chat_id=chat_id, text=text)
         return False
 
@@ -68,6 +73,7 @@ class TelegramApp:
         *,
         send_message: Any | None = None,
         llm_client_factory: Any | None = None,
+        coach_client_factory: Any | None = None,
         llm_name_allocator: BotNameAllocator | None = None,
         bot: Any | None = None,
         registry: TelegramTableRegistry | None = None,
@@ -77,6 +83,7 @@ class TelegramApp:
         self._bot = bot
         self._send_message_callback = send_message
         self._llm_client_factory = llm_client_factory or self._default_llm_client_factory
+        self._coach_client_factory = coach_client_factory or self._default_coach_client_factory
         self._llm_name_allocator = llm_name_allocator
         self._create_flows: dict[int, _CreateTableFlowState] = {}
         self.action_router = TelegramActionRouter(self.registry)
@@ -116,6 +123,7 @@ class TelegramApp:
                     "/start_game - creator starts a full waiting table",
                     "/leave_table - leave a waiting table",
                     "/cancel_table - creator cancels a waiting table",
+                    "/coach <question> - ask the table coach on your turn",
                     "/help - show this help",
                 ]
             ),
@@ -190,6 +198,53 @@ class TelegramApp:
             session,
             self._format_started_table_message(session),
         )
+
+    async def handle_coach_command(self, *, user_id: int, chat_id: int, question: str) -> None:
+        session = self.registry.get_user_table(user_id)
+        if session is None or session.status != TelegramTableState.RUNNING:
+            await self._send_message(chat_id, "Coach tips are only available while your table is running.")
+            return
+        if session.coach is None:
+            await self._send_message(chat_id, "Coach is not enabled for this table.")
+            return
+        agent = next(
+            (
+                candidate
+                for candidate in session.player_agents.values()
+                if isinstance(candidate, TelegramPlayerAgent)
+                and candidate.matches_user(user_id=user_id, chat_id=chat_id)
+            ),
+            None,
+        )
+        if agent is None or agent.pending_decision is None:
+            await self._send_message(chat_id, "Coach tips are only available on your turn.")
+            return
+        if not question.strip():
+            await self._send_message(chat_id, "Usage: /coach <question>")
+            return
+        if agent.seat_id in session.coach_pending_seat_ids:
+            await self._send_message(chat_id, "Coach is already thinking for your seat.")
+            return
+        if session.orchestrator is None or session.orchestrator.current_hand_record is None:
+            await self._send_message(chat_id, "Current hand context is unavailable.")
+            return
+
+        session.coach_pending_seat_ids.add(agent.seat_id)
+        try:
+            await self._send_message(chat_id, "Coach is thinking...")
+            reply = await session.coach.answer_question(
+                table_id=session.table_id,
+                seat_id=agent.seat_id,
+                decision=agent.pending_decision,
+                current_hand_record=session.orchestrator.current_hand_record,
+                question=question,
+            )
+        except CoachRequestError as exc:
+            await self._send_message(chat_id, str(exc))
+            return
+        finally:
+            session.coach_pending_seat_ids.discard(agent.seat_id)
+        await self._send_message(chat_id, reply)
 
     async def handle_leave_table_command(self, *, user_id: int, chat_id: int) -> None:
         logger.debug("Handling /leave_table user_id=%s chat_id=%s", user_id, chat_id)
@@ -339,6 +394,16 @@ class TelegramApp:
         async def on_cancel_table(message: Message) -> None:
             await self.handle_cancel_table_command(user_id=message.from_user.id, chat_id=message.chat.id)
 
+        @router.message(Command("coach"))
+        async def on_coach(message: Message) -> None:
+            parts = (message.text or "").split(maxsplit=1)
+            question = parts[1].strip() if len(parts) == 2 else ""
+            await self.handle_coach_command(
+                user_id=message.from_user.id,
+                chat_id=message.chat.id,
+                question=question,
+            )
+
         @router.message(F.text)
         async def on_text(message: Message) -> None:
             if message.text and message.text.startswith("/"):
@@ -441,13 +506,23 @@ class TelegramApp:
         session.engine = engine
         session.player_agents = player_agents
         session.orchestrator = orchestrator
+        session.coach = self._build_table_coach()
         self.registry.mark_running(session)
         session.orchestrator_task = asyncio.create_task(self._run_session(session))
 
     async def _run_session(self, session: TelegramTableSession) -> None:
         assert session.orchestrator is not None
+        async def after_hand(result: Any) -> None:
+            if result.completed_hand is not None and session.coach is not None:
+                await session.coach.record_completed_hand(result.completed_hand)
+
         try:
-            await run_table(session.orchestrator, max_hands=self.config.max_hands_per_table, close_agents=True)
+            await run_table(
+                session.orchestrator,
+                max_hands=self.config.max_hands_per_table,
+                close_agents=True,
+                after_hand=after_hand,
+            )
         finally:
             logger.info("Table %s completed", session.table_id)
             self.registry.mark_completed(session)
@@ -480,6 +555,19 @@ class TelegramApp:
             raise RuntimeError("LLM model and API key are required to create LLM seats")
         return LLMGameClient(
             settings=self.config.llm,
+        )
+
+    def _default_coach_client_factory(self) -> LLMGameClient:
+        if self.config.coach.model is None or self.config.coach.api_key is None:
+            raise RuntimeError("Coach model and API key are required when coach is enabled")
+        return LLMGameClient(settings=self.config.coach)
+
+    def _build_table_coach(self) -> TableCoach | None:
+        if not self.config.coach.enabled:
+            return None
+        return TableCoach(
+            self._coach_client_factory(),
+            recent_hand_count=self.config.coach.recent_hand_count,
         )
 
     def _allocate_llm_name(self) -> str:

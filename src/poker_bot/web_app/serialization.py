@@ -116,6 +116,7 @@ def _serialize_controls(
         "can_leave": token_valid and not is_creator and session.status.value == "waiting",
         "can_cancel": token_valid and is_creator and session.status.value == "waiting",
         "can_act": has_pending_decision,
+        "can_request_coach": has_pending_decision and session.coach is not None,
         "share_path": f"/table/{session.table_id}",
         "join_disabled_reason": None if can_join else _join_disabled_reason(session, viewer),
     }

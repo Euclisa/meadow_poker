@@ -21,7 +21,10 @@ export function renderStatusMarkup(snapshot, {
   flashTone = "info",
   joinName = "",
   busy = false,
+  coachPending = false,
   actionAmount = "",
+  coachReply = "",
+  coachVisible = false,
 } = {}) {
   if (!snapshot) {
     return `<div class="panel panel--wide loading-card">Loading table...</div>`;
@@ -47,7 +50,8 @@ export function renderStatusMarkup(snapshot, {
           : ""
       }
 
-      ${renderPlayWindow(snapshot, { joinName, busy, actionAmount })}
+      ${renderPlayWindow(snapshot, { joinName, busy, coachPending, actionAmount })}
+      ${renderCoachBubble({ coachReply, coachVisible, coachPending })}
       ${renderHistoryStrip(snapshot)}
     </main>
   `;
@@ -202,7 +206,7 @@ function renderSeatAmountBadge(seatAmountBadge, { side }) {
   `;
 }
 
-function renderToolbar(snapshot, { joinName = "", busy = false, actionAmount = "" } = {}) {
+function renderToolbar(snapshot, { joinName = "", busy = false, coachPending = false, actionAmount = "" } = {}) {
   const controls = snapshot.controls;
   const summary = snapshot.config_summary;
   const pendingDecision = snapshot.pending_decision;
@@ -271,6 +275,17 @@ function renderToolbar(snapshot, { joinName = "", busy = false, actionAmount = "
               placeholder="${escapeHtml(prettyPhaseLabel(rangedAction.action_type))} amt">
           ` : ""}
           <div class="action-dock__buttons">
+            ${controls.can_request_coach
+              ? `
+                  <button
+                    class="button button--coach"
+                    id="coach-button"
+                    type="button"
+                    ${coachPending ? "disabled" : ""}>
+                    ${coachPending ? "..." : "💡"}
+                  </button>
+                `
+              : ""}
             ${pendingDecision
               ? pendingDecision.legal_actions.map((action) => `
                   <button class="button ${action.action_type === "fold" ? "button--fold" : action.action_type === "check" || action.action_type === "call" ? "button--call" : "button--raise"}"
@@ -284,6 +299,21 @@ function renderToolbar(snapshot, { joinName = "", busy = false, actionAmount = "
         </div>
       </div>
     </section>
+  `;
+}
+
+function renderCoachBubble({ coachReply = "", coachVisible = false, coachPending = false } = {}) {
+  if (!coachVisible && !coachPending) {
+    return "";
+  }
+  return `
+    <aside class="coach-bubble${coachPending ? " coach-bubble--pending" : ""}">
+      <button class="coach-bubble__close" id="coach-bubble-close" type="button" aria-label="Close coach tip">×</button>
+      <div class="coach-bubble__label">${coachPending ? "Coach is thinking" : "Coach tip"}</div>
+      <div class="coach-bubble__text">
+        ${coachPending ? "Looking at the spot..." : escapeHtml(coachReply)}
+      </div>
+    </aside>
   `;
 }
 

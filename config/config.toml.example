@@ -18,6 +18,20 @@ thought_logging = "off"
 # Optional. Applied only when llm.base_url points to openrouter.ai.
 # sort = "throughput"
 
+[coach]
+enabled = false
+model = "gpt-4.1-mini"
+api_key = "replace-with-real-api-key"
+base_url = "https://api.openai.com/v1"
+timeout = 30.0
+# Optional. Leave this line commented out to avoid capping output tokens.
+# max_output_tokens = 300
+recent_hand_count = 5
+
+[coach.openrouter]
+# Optional. Applied only when coach.base_url points to openrouter.ai.
+# sort = "throughput"
+
 [telegram]
 bot_token = "replace-with-telegram-bot-token"
 bot_username = "your_bot_username"

@@ -7,7 +7,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from poker_bot.config import LLMSettings
+from poker_bot.coach import CoachRequestError, TableCoach
+from poker_bot.config import CoachSettings, LLMSettings
 from poker_bot.naming import BotNameAllocator
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
@@ -39,6 +40,7 @@ class WebAppConfig:
     starting_stack: int = 2_000
     max_players: int = 6
     llm: LLMSettings = field(default_factory=LLMSettings)
+    coach: CoachSettings = field(default_factory=CoachSettings)
     max_hands_per_table: int | None = None
     showdown_delay_seconds: float = 5.0
 
@@ -49,12 +51,14 @@ class WebApp:
         config: WebAppConfig,
         *,
         llm_client_factory: Any | None = None,
+        coach_client_factory: Any | None = None,
         llm_name_allocator: BotNameAllocator | None = None,
         registry: WebTableRegistry | None = None,
     ) -> None:
         self.config = config
         self.registry = registry or WebTableRegistry()
         self._llm_client_factory = llm_client_factory or self._default_llm_client_factory
+        self._coach_client_factory = coach_client_factory or self._default_coach_client_factory
         self._llm_name_allocator = llm_name_allocator
 
     def create_http_app(self) -> Any:
@@ -70,6 +74,7 @@ class WebApp:
         app.router.add_post("/api/tables/{table_id}/leave", self.handle_leave_table)
         app.router.add_post("/api/tables/{table_id}/cancel", self.handle_cancel_table)
         app.router.add_post("/api/tables/{table_id}/action", self.handle_submit_action)
+        app.router.add_post("/api/tables/{table_id}/coach", self.handle_request_coach)
         app.router.add_get("/api/tables/{table_id}/state", self.handle_table_state)
         app.router.add_get("/api/tables/{table_id}/stream", self.handle_table_stream)
         app.router.add_static("/static", _STATIC_DIR)
@@ -275,6 +280,41 @@ class WebApp:
             )
         return self._json_response({"ok": True})
 
+    async def handle_request_coach(self, request: Any) -> Any:
+        payload = await self._read_json(request)
+        table_id = request.match_info["table_id"]
+        seat_token = self._normalize_token(payload.get("seat_token"))
+        question = str(payload.get("question", "")).strip() or "What should I do in this spot?"
+
+        try:
+            session = self._require_table(table_id)
+            viewer = self._require_reservation(session, seat_token)
+        except KeyError:
+            return self._error_response("Table not found.", status=404)
+        except PermissionError as exc:
+            return self._error_response(str(exc), status=403)
+
+        if session.status != TelegramTableState.RUNNING:
+            return self._error_response("Coach tips are only available while the table is running.", status=400)
+        if session.coach is None:
+            return self._error_response("Coach is not enabled for this table.", status=400)
+        agent = session.player_agents.get(viewer.seat_id)
+        if not isinstance(agent, WebPlayerAgent) or agent.pending_decision is None:
+            return self._error_response("Coach tips are only available on your turn.", status=400)
+        if session.orchestrator is None or session.orchestrator.current_hand_record is None:
+            return self._error_response("Current hand context is unavailable.", status=400)
+        try:
+            reply = await session.coach.answer_question(
+                table_id=session.table_id,
+                seat_id=viewer.seat_id,
+                decision=agent.pending_decision,
+                current_hand_record=session.orchestrator.current_hand_record,
+                question=question,
+            )
+        except CoachRequestError as exc:
+            return self._error_response(str(exc), status=504)
+        return self._json_response({"ok": True, "reply": reply})
+
     async def handle_table_state(self, request: Any) -> Any:
         table_id = request.match_info["table_id"]
         seat_token = self._normalize_token(request.query.get("seat_token"))
@@ -338,6 +378,7 @@ class WebApp:
         session.engine = engine
         session.player_agents = player_agents
         session.orchestrator = orchestrator
+        session.coach = self._build_table_coach()
         self.registry.mark_running(session)
         session.status_message = f"Table {session.table_id} started with {session.total_seats} seats."
         session.add_activity(kind="state", text=session.status_message)
@@ -348,6 +389,8 @@ class WebApp:
         assert session.orchestrator is not None
 
         async def after_hand(result: Any) -> None:
+            if result.completed_hand is not None and session.coach is not None:
+                await session.coach.record_completed_hand(result.completed_hand)
             if not result.ended_in_showdown:
                 return
             session.showdown_state = self._build_showdown_state(result)
@@ -524,6 +567,19 @@ class WebApp:
             raise RuntimeError("LLM model and API key are required to create LLM seats")
         return LLMGameClient(
             settings=self.config.llm,
+        )
+
+    def _default_coach_client_factory(self) -> LLMGameClient:
+        if self.config.coach.model is None or self.config.coach.api_key is None:
+            raise RuntimeError("Coach model and API key are required when coach is enabled")
+        return LLMGameClient(settings=self.config.coach)
+
+    def _build_table_coach(self) -> TableCoach | None:
+        if not self.config.coach.enabled:
+            return None
+        return TableCoach(
+            self._coach_client_factory(),
+            recent_hand_count=self.config.coach.recent_hand_count,
         )
 
     def _allocate_llm_name(self) -> str:

@@ -55,10 +55,10 @@ export function renderLobbyMarkup(model) {
     <main class="app-shell app-shell--lobby">
       <section class="hero-card hero-card--meadow">
         <div class="hero-card__copy">
-          <p class="eyebrow">Vanilla Web Lobby</p>
-          <h1>Pastel felt, live action, zero Telegram friction.</h1>
+          <p class="eyebrow">Browser Lobby</p>
+          <h1>Pastel felt. Live tables.</h1>
           <p class="hero-card__lede">
-            Create a browser table, invite friends with a share link, and keep the existing poker engine doing the heavy lifting.
+            Create a table, share the link, and play right in the browser.
           </p>
         </div>
         <div class="hero-card__stats">

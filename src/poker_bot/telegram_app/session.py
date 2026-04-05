@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from poker_bot.coach import TableCoach
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.base import PlayerAgent
 from poker_bot.types import TelegramTableCreateRequest, TelegramTableState, TelegramTableStatus
@@ -24,7 +25,9 @@ class TelegramTableSession:
     status: TelegramTableState = TelegramTableState.WAITING
     engine: object | None = None
     orchestrator: GameOrchestrator | None = None
+    coach: TableCoach | None = None
     player_agents: dict[str, PlayerAgent] = field(default_factory=dict)
+    coach_pending_seat_ids: set[str] = field(default_factory=set)
     orchestrator_task: object | None = None
 
     @property

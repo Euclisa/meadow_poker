@@ -4,7 +4,7 @@ from textwrap import dedent
 
 import pytest
 
-from poker_bot.config import OpenRouterSettings, ThoughtLoggingMode, load_project_config
+from poker_bot.config import CoachSettings, OpenRouterSettings, ThoughtLoggingMode, load_project_config
 
 
 def test_load_project_config_resolves_matching_openrouter_settings(tmp_path) -> None:
@@ -147,3 +147,26 @@ def test_load_project_config_rejects_invalid_thought_logging_mode(tmp_path) -> N
 
     with pytest.raises(ValueError, match="llm.thought_logging must be one of"):
         load_project_config(config_path)
+
+
+def test_load_project_config_reads_coach_settings(tmp_path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        dedent(
+            """
+            [coach]
+            enabled = true
+            model = "gpt-coach"
+            api_key = "coach-key"
+            recent_hand_count = 7
+            """
+        ).strip()
+    )
+
+    config = load_project_config(config_path)
+
+    assert isinstance(config.coach, CoachSettings)
+    assert config.coach.enabled is True
+    assert config.coach.model == "gpt-coach"
+    assert config.coach.api_key == "coach-key"
+    assert config.coach.recent_hand_count == 7

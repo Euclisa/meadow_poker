@@ -41,6 +41,12 @@ class TelegramPlayerAgent(PlayerAgent):
         self._status_message_id: int | None = None
         self._last_status_text: str | None = None
 
+    @property
+    def pending_decision(self) -> DecisionRequest | None:
+        if self._pending_state is None:
+            return None
+        return self._pending_state.decision_request
+
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
         return await self.begin_pending_action(decision)
 
@@ -182,6 +188,9 @@ class TelegramPlayerAgent(PlayerAgent):
 
     async def close(self) -> None:
         await self.cancel_pending_action("agent_closed")
+
+    async def send_private_message(self, text: str) -> None:
+        await self._dispatch_message(text, None)
 
     def matches_user(self, *, user_id: int, chat_id: int) -> bool:
         return self.user_id == user_id and self.chat_id == chat_id

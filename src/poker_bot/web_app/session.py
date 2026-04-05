@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any
 
+from poker_bot.coach import TableCoach
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.base import PlayerAgent
 from poker_bot.types import TelegramTableState
@@ -53,6 +54,7 @@ class WebTableSession:
     status: TelegramTableState = TelegramTableState.WAITING
     engine: object | None = None
     orchestrator: GameOrchestrator | None = None
+    coach: TableCoach | None = None
     player_agents: dict[str, PlayerAgent] = field(default_factory=dict)
     orchestrator_task: asyncio.Task[Any] | None = None
     status_message: str = "Waiting for players."

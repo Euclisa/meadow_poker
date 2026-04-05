@@ -19,11 +19,17 @@ const state = {
   snapshot: null,
   seatToken: loadSeatToken(tableId),
   busy: false,
+  coachPending: false,
   flash: "",
   flashTone: "info",
   joinName: "",
   actionAmount: "",
   stream: null,
+  coachReply: "",
+  coachVisible: false,
+  coachAbortController: null,
+  coachRequestToken: 0,
+  coachTurnKey: "",
 };
 
 function setFlash(message, tone = "info") {
@@ -43,7 +49,10 @@ export function renderTableMarkup(snapshot) {
     flashTone: state.flashTone,
     joinName: state.joinName,
     busy: state.busy,
+    coachPending: state.coachPending,
     actionAmount: state.actionAmount,
+    coachReply: state.coachReply,
+    coachVisible: state.coachVisible,
   });
 }
 
@@ -76,6 +85,13 @@ function bindDelegatedEvents() {
     if (target.id === "start-table-button") { performTableCommand("start"); return; }
     if (target.id === "cancel-table-button") { performTableCommand("cancel"); return; }
     if (target.id === "leave-table-button") { performTableCommand("leave"); return; }
+    if (target.id === "coach-button") { requestCoachTip(); return; }
+    if (target.id === "coach-bubble-close") {
+      cancelCoachRequest();
+      state.coachVisible = false;
+      render();
+      return;
+    }
 
     if (target.dataset.actionType) {
       submitAction(target.dataset.actionType);
@@ -149,6 +165,7 @@ async function performTableCommand(command) {
 
 async function submitAction(actionType) {
   clearFlash();
+  cancelCoachRequest();
   state.busy = true;
   render();
 
@@ -172,6 +189,59 @@ async function submitAction(actionType) {
     state.busy = false;
     setFlash(error.message, "error");
   }
+}
+
+async function requestCoachTip() {
+  if (!state.snapshot?.controls?.can_request_coach || state.coachPending) {
+    return;
+  }
+  clearFlash();
+  cancelCoachRequest();
+  state.coachPending = true;
+  state.coachReply = "";
+  state.coachVisible = false;
+  state.coachRequestToken += 1;
+  const requestToken = state.coachRequestToken;
+  state.coachTurnKey = currentTurnKey(state.snapshot);
+  state.coachAbortController = new AbortController();
+  render();
+
+  try {
+    const payload = await requestJson(`/api/tables/${state.tableId}/coach`, {
+      method: "POST",
+      body: JSON.stringify({
+        seat_token: state.seatToken,
+      }),
+      signal: state.coachAbortController.signal,
+    });
+    if (requestToken !== state.coachRequestToken) {
+      return;
+    }
+    if (currentTurnKey(state.snapshot) !== state.coachTurnKey) {
+      return;
+    }
+    state.coachReply = payload.reply ?? "";
+    state.coachVisible = Boolean(state.coachReply);
+    state.coachPending = false;
+    state.coachAbortController = null;
+    render();
+  } catch (error) {
+    if (error.name === "AbortError") {
+      return;
+    }
+    state.coachPending = false;
+    state.coachAbortController = null;
+    setFlash(error.message, "error");
+  }
+}
+
+function cancelCoachRequest() {
+  if (state.coachAbortController) {
+    state.coachAbortController.abort();
+  }
+  state.coachAbortController = null;
+  state.coachPending = false;
+  state.coachRequestToken += 1;
 }
 
 function resolveSubmittedAmount(actionType) {
@@ -209,6 +279,7 @@ async function loadState() {
       throw error;
     }
   }
+  syncCoachStateAfterSnapshot();
   render();
 }
 
@@ -218,12 +289,26 @@ function connectStream() {
   state.stream = openSnapshotStream(`/api/tables/${state.tableId}/stream${tokenQuery}`, {
     onSnapshot(snapshot) {
       state.snapshot = snapshot;
+      syncCoachStateAfterSnapshot();
       render();
     },
     onError() {
       window.setTimeout(connectStream, 1500);
     },
   });
+}
+
+function currentTurnKey(snapshot) {
+  const handNumber = snapshot?.public_table?.hand_number ?? "none";
+  const seatId = snapshot?.player_view?.seat_id ?? "none";
+  const isTurn = snapshot?.pending_decision ? "turn" : "idle";
+  return `${handNumber}:${seatId}:${isTurn}`;
+}
+
+function syncCoachStateAfterSnapshot() {
+  if (!state.snapshot?.pending_decision) {
+    cancelCoachRequest();
+  }
 }
 
 async function init() {

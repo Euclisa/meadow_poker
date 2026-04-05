@@ -36,6 +36,11 @@ class TelegramTableState(str, Enum):
     CANCELLED = "cancelled"
 
 
+class HandRecordStatus(str, Enum):
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+
+
 class PlayerUpdateType(str, Enum):
     STATE_CHANGED = "state_changed"
     TURN_STARTED = "turn_started"
@@ -156,12 +161,23 @@ class PlayerUpdate:
 
 
 @dataclass(frozen=True, slots=True)
+class HandRecord:
+    hand_number: int
+    status: HandRecordStatus
+    events: tuple[GameEvent, ...]
+    start_public_view: PublicTableView
+    current_public_view: PublicTableView
+    ended_in_showdown: bool
+
+
+@dataclass(frozen=True, slots=True)
 class HandRunResult:
     started: bool
     hand_number: int | None
     ended_in_showdown: bool
     table_complete: bool
     events: tuple[GameEvent, ...] = ()
+    completed_hand: HandRecord | None = None
 
 
 @dataclass(frozen=True, slots=True)

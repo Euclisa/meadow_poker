@@ -131,6 +131,46 @@ class LLMSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class CoachSettings:
+    enabled: bool = False
+    model: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    timeout: float = 30.0
+    max_output_tokens: int | None = None
+    recent_hand_count: int = 5
+    provider_settings: LLMProviderSettings | None = None
+
+    @classmethod
+    def from_config(cls, raw: Mapping[str, object]) -> Self:
+        base_url = _optional_str(raw.get("base_url"))
+        provider_candidates = _parse_llm_provider_settings(raw)
+        matching_providers = tuple(
+            provider for provider in provider_candidates if provider.matches_base_url(base_url)
+        )
+        if len(matching_providers) > 1:
+            provider_names = ", ".join(type(provider).__name__ for provider in matching_providers)
+            raise ValueError(f"Multiple LLM provider settings match coach.base_url: {provider_names}")
+        return cls(
+            enabled=bool(raw.get("enabled", False)),
+            model=_optional_str(raw.get("model")),
+            api_key=_optional_str(raw.get("api_key")),
+            base_url=base_url,
+            timeout=float(raw.get("timeout", 30.0)),
+            max_output_tokens=_optional_int(raw.get("max_output_tokens")),
+            recent_hand_count=int(raw.get("recent_hand_count", 5)),
+            provider_settings=matching_providers[0] if matching_providers else None,
+        )
+
+    def to_extra_body(self) -> dict[str, Any]:
+        if self.provider_settings is None:
+            return {}
+        if not self.provider_settings.matches_base_url(self.base_url):
+            return {}
+        return self.provider_settings.to_extra_body()
+
+
+@dataclass(frozen=True, slots=True)
 class TelegramSettings:
     bot_token: str | None = None
     bot_username: str | None = None
@@ -149,6 +189,7 @@ class WebSettings:
 class ProjectConfig:
     game: GameSettings = field(default_factory=GameSettings)
     llm: LLMSettings = field(default_factory=LLMSettings)
+    coach: CoachSettings = field(default_factory=CoachSettings)
     telegram: TelegramSettings = field(default_factory=TelegramSettings)
     web: WebSettings = field(default_factory=WebSettings)
 
@@ -165,6 +206,7 @@ def load_project_config(path: str | Path = DEFAULT_CONFIG_PATH) -> ProjectConfig
 
     game_raw = raw.get("game", {})
     llm_raw = raw.get("llm", {})
+    coach_raw = raw.get("coach", {})
     telegram_raw = raw.get("telegram", {})
     web_raw = raw.get("web", {})
     game = GameSettings(
@@ -175,6 +217,7 @@ def load_project_config(path: str | Path = DEFAULT_CONFIG_PATH) -> ProjectConfig
         log_level=game_raw.get("log_level"),
     )
     llm = LLMSettings.from_config(llm_raw)
+    coach = CoachSettings.from_config(coach_raw)
     telegram = TelegramSettings(
         bot_token=telegram_raw.get("bot_token"),
         bot_username=telegram_raw.get("bot_username"),
@@ -188,7 +231,7 @@ def load_project_config(path: str | Path = DEFAULT_CONFIG_PATH) -> ProjectConfig
     )
 
     _validate_project_config(game=game, telegram=telegram, web=web)
-    return ProjectConfig(game=game, llm=llm, telegram=telegram, web=web)
+    return ProjectConfig(game=game, llm=llm, coach=coach, telegram=telegram, web=web)
 
 
 def _validate_project_config(

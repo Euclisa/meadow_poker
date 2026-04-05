@@ -9,6 +9,7 @@ from poker_bot.poker.engine import PokerEngine
 from poker_bot.types import (
     ActionType,
     DecisionRequest,
+    HandRecordStatus,
     PlayerAction,
     PlayerUpdate,
     PlayerUpdateType,
@@ -44,6 +45,17 @@ class AlternateScriptedAgent(ScriptedAgent):
     pass
 
 
+class InspectingScriptedAgent(ScriptedAgent):
+    def __init__(self, seat_id: str, actions: list[PlayerAction]) -> None:
+        super().__init__(seat_id, actions)
+        self.orchestrator: GameOrchestrator | None = None
+        self.hand_records_at_decision = []
+
+    async def request_action(self, decision: DecisionRequest) -> PlayerAction:
+        self.hand_records_at_decision.append(self.orchestrator.current_hand_record if self.orchestrator is not None else None)
+        return await super().request_action(decision)
+
+
 def make_heads_up_orchestrator(agent_one: ScriptedAgent, agent_two: ScriptedAgent) -> GameOrchestrator:
     deck = (
         "As",
@@ -60,7 +72,11 @@ def make_heads_up_orchestrator(agent_one: ScriptedAgent, agent_two: ScriptedAgen
         TableConfig(deck_factory=PredefinedDeckFactory([deck])),
         [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
     )
-    return GameOrchestrator(engine, {"p1": agent_one, "p2": agent_two})
+    orchestrator = GameOrchestrator(engine, {"p1": agent_one, "p2": agent_two})
+    for agent in (agent_one, agent_two):
+        if isinstance(agent, InspectingScriptedAgent):
+            agent.orchestrator = orchestrator
+    return orchestrator
 
 
 def test_orchestrator_only_prompts_acting_seat_and_delivers_event_deltas() -> None:
@@ -255,3 +271,42 @@ def test_orchestrator_marks_table_completed_updates() -> None:
 
     assert any(update.update_type == PlayerUpdateType.TABLE_COMPLETED for update in agent_one.updates)
     assert any(update.update_type == PlayerUpdateType.TABLE_COMPLETED for update in agent_two.updates)
+
+
+def test_orchestrator_exposes_live_and_completed_hand_records() -> None:
+    agent_one = InspectingScriptedAgent(
+        "p1",
+        actions=[
+            PlayerAction(ActionType.CALL),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+        ],
+    )
+    agent_two = InspectingScriptedAgent(
+        "p2",
+        actions=[
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+        ],
+    )
+    orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
+
+    result = asyncio.run(orchestrator.play_hand())
+
+    assert agent_one.hand_records_at_decision
+    live_record = agent_one.hand_records_at_decision[0]
+    assert live_record is not None
+    assert live_record.status is HandRecordStatus.IN_PROGRESS
+    assert live_record.hand_number == 1
+    assert live_record.start_public_view.hand_number == 1
+    assert any(event.event_type == "hand_started" for event in live_record.events)
+
+    assert result.completed_hand is not None
+    assert result.completed_hand.status is HandRecordStatus.COMPLETED
+    assert result.completed_hand.hand_number == 1
+    assert result.completed_hand.ended_in_showdown is True
+    assert result.completed_hand.current_public_view.phase.value == "hand_complete"
+    assert orchestrator.current_hand_record is None

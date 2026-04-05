@@ -6,13 +6,14 @@ from json import JSONDecodeError
 from dataclasses import dataclass
 from typing import Any
 
-from poker_bot.config import LLMSettings, ThoughtLoggingMode
+from poker_bot.config import CoachSettings, LLMSettings, ThoughtLoggingMode
+from poker_bot.hand_history import hand_record_from_updates, render_private_completed_hand_summary
 from poker_bot.players.base import PlayerAgent
 from poker_bot.players.rendering import render_events, render_player_update
 from poker_bot.types import (
     ActionType,
     DecisionRequest,
-    GameEvent,
+    HandRecordStatus,
     PlayerAction,
     PlayerUpdate,
     PlayerUpdateType,
@@ -31,7 +32,7 @@ class LLMGameClient:
     def __init__(
         self,
         *,
-        settings: LLMSettings,
+        settings: LLMSettings | CoachSettings,
         retries: int = 2,
         client: Any | None = None,
     ) -> None:
@@ -342,7 +343,9 @@ class LLMPlayerAgent(PlayerAgent):
             self._hand_updates.clear()
             self._tracked_hand_number = None
             return
-        summary = self._summarize_hand(self._hand_updates)
+        record = hand_record_from_updates(self._hand_updates, status=HandRecordStatus.COMPLETED)
+        assert record is not None
+        summary = render_private_completed_hand_summary(record, self._hand_updates[-1].player_view)
         if self.thought_logging.logs_hand_summaries:
             logger.info("LLM thought seat_id=%s type=hand_summary\n%s", self.seat_id, summary)
         self._pending_hand_summaries.append(summary)
@@ -388,109 +391,3 @@ class LLMPlayerAgent(PlayerAgent):
                 self._reflection_note,
             )
         self._pending_hand_summaries.clear()
-
-    def _summarize_hand(self, updates: list[PlayerUpdate]) -> str:
-        first_update = updates[0]
-        final_update = updates[-1]
-        seat_names = {seat.seat_id: seat.name for seat in final_update.public_table_view.seats}
-        events = [event for update in updates for event in update.events]
-        player_view = final_update.player_view
-
-        sections: list[str] = []
-        current_heading = "Preflop:"
-        current_lines: list[str] = []
-        showdown_lines: list[str] = []
-        result_lines: list[str] = []
-
-        def flush_current_section() -> None:
-            nonlocal current_lines
-            if current_lines:
-                sections.append("\n".join([current_heading, *current_lines]))
-                current_lines = []
-
-        for event in events:
-            payload = event.payload
-            if event.event_type == "street_started":
-                phase = payload["phase"]
-                if phase == "preflop":
-                    continue
-                flush_current_section()
-                board = " ".join(payload.get("board_cards", ())) or "-"
-                current_heading = f"{phase.title()}: {board}"
-                continue
-            if event.event_type == "showdown_started":
-                flush_current_section()
-                board = " ".join(payload.get("board_cards", ())) or "-"
-                showdown_lines.append(f"- Final board: {board}")
-                continue
-            if event.event_type == "showdown_revealed":
-                cards = " ".join(payload.get("hole_cards", ())) or "-"
-                name = seat_names.get(payload.get("seat_id"), payload.get("seat_id", "unknown"))
-                showdown_lines.append(f"- {name} showed {cards}: {payload['hand_label']}")
-                continue
-            if event.event_type in {"pot_awarded", "hand_awarded", "chips_refunded"}:
-                result_lines.append(f"- {self._render_summary_event(event, seat_names)}")
-                continue
-            if event.event_type in {"hand_started", "hand_completed", "table_completed", "bet_updated"}:
-                continue
-            rendered = self._render_summary_event(event, seat_names)
-            if rendered is not None:
-                current_lines.append(f"- {rendered}")
-
-        flush_current_section()
-
-        lines = [
-            f"Hand #{final_update.public_table_view.hand_number}",
-            f"You were: {player_view.player_name} at seat {player_view.seat_id}",
-            f"Your hole cards: {' '.join(player_view.hole_cards) or '-'}",
-            "",
-            "Players at hand start:",
-            *[
-                f"- {seat.seat_id} {seat.name}: stack={seat.stack}"
-                for seat in first_update.public_table_view.seats
-            ],
-        ]
-        if sections:
-            lines.extend(["", *sections])
-        if showdown_lines:
-            lines.extend(["", "Showdown:", *showdown_lines])
-        if result_lines:
-            lines.extend(["", "Result:", *result_lines])
-        lines.extend(
-            [
-                "",
-                "Stacks after hand:",
-                *[f"- {seat.name}: {seat.stack}" for seat in final_update.public_table_view.seats],
-            ]
-        )
-        return "\n".join(lines)
-
-    def _render_summary_event(self, event: GameEvent, seat_names: dict[str, str]) -> str | None:
-        payload = event.payload
-        seat_id = payload.get("seat_id")
-        name = seat_names.get(seat_id, seat_id or "unknown")
-        if event.event_type == "blind_posted":
-            return f"{name} posted {payload['blind']} blind {payload['amount']}"
-        if event.event_type == "action_applied":
-            amount = payload.get("amount")
-            action = payload["action"]
-            if action == "raise" and amount is not None:
-                return f"{name} raised to {amount}"
-            if action == "bet" and amount is not None:
-                return f"{name} bet {amount}"
-            if action == "call" and amount is not None:
-                return f"{name} called {amount}"
-            if action == "fold":
-                return f"{name} folded"
-            if action == "check":
-                return f"{name} checked"
-            if amount is not None:
-                return f"{name} {action} {amount}"
-            return f"{name} {action}"
-        if event.event_type == "pot_awarded":
-            return f"{name} won {payload['amount']}"
-        if event.event_type == "hand_awarded":
-            return f"{name} collected {payload['amount']}"
-        if event.event_type == "chips_refunded":
-            return f"{name} refunded {payload['amount']}"
-        return None

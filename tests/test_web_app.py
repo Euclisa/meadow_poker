@@ -5,15 +5,17 @@ import json
 from pathlib import Path
 import subprocess
 
-from poker_bot.config import LLMSettings
+from poker_bot.config import CoachSettings, LLMSettings
 from poker_bot.naming import BotNameAllocator
 from poker_bot.players.llm import LLMGameClient
 from poker_bot.web_app.app import WebApp, WebAppConfig
 
 
 class FakeResponsesAPI:
-    def __init__(self, outputs: list[str]) -> None:
+    def __init__(self, outputs: list[str], *, delay: float = 0.0) -> None:
         self.outputs = list(outputs)
+        self.delay = delay
+        self.messages_list: list[list[dict[str, str]]] = []
 
     async def create(
         self,
@@ -23,6 +25,10 @@ class FakeResponsesAPI:
         max_output_tokens: int | None = None,
         extra_body: dict | None = None,
     ) -> object:
+        del model, max_output_tokens, extra_body
+        self.messages_list.append(messages)
+        if self.delay:
+            await asyncio.sleep(self.delay)
         output = self.outputs.pop(0) if self.outputs else '{"action":"check"}'
         message = type("Message", (), {"content": output})()
         choice = type("Choice", (), {"message": message})()
@@ -30,14 +36,16 @@ class FakeResponsesAPI:
 
 
 class FakeOpenAIClient:
-    def __init__(self, outputs: list[str]) -> None:
-        self.chat = type("Chat", (), {"completions": FakeResponsesAPI(outputs)})()
+    def __init__(self, outputs: list[str], *, delay: float = 0.0) -> None:
+        self.chat = type("Chat", (), {"completions": FakeResponsesAPI(outputs, delay=delay)})()
 
 
 def make_web_app(
     *,
     max_hands: int | None = None,
     llm_outputs: list[str] | None = None,
+    coach_outputs: list[str] | None = None,
+    coach_delay: float = 0.0,
     showdown_delay_seconds: float = 5.0,
 ) -> WebApp:
     llm_outputs = llm_outputs or ['{"action":"check"}'] * 20
@@ -51,16 +59,34 @@ def make_web_app(
             client=FakeOpenAIClient(list(llm_outputs)),
         )
 
+    def make_coach_client() -> LLMGameClient:
+        return LLMGameClient(
+            settings=CoachSettings(
+                enabled=True,
+                model="gpt-coach",
+                api_key="coach-test",
+                timeout=0.2,
+            ),
+            client=FakeOpenAIClient(list(coach_outputs or ["Coach reply"]), delay=coach_delay),
+        )
+
     return WebApp(
         WebAppConfig(
             llm=LLMSettings(
                 model="gpt-test",
                 api_key="test",
             ),
+            coach=CoachSettings(
+                enabled=coach_outputs is not None,
+                model="gpt-coach",
+                api_key="coach-test",
+                timeout=0.2,
+            ),
             max_hands_per_table=max_hands,
             showdown_delay_seconds=showdown_delay_seconds,
         ),
         llm_client_factory=make_llm_client,
+        coach_client_factory=make_coach_client,
         llm_name_allocator=BotNameAllocator(names=("Nova",), seed=1),
     )
 
@@ -304,6 +330,98 @@ def test_web_app_llm_table_can_complete_and_preserve_token_rejoin() -> None:
         assert completed_snapshot["status"] == "completed"
         assert completed_snapshot["controls"]["seat_token_valid"] is True
         assert completed_snapshot["player_view"]["player_name"] == "Alice"
+
+    asyncio.run(scenario())
+
+
+def test_web_app_coach_request_is_private_and_actions_can_continue() -> None:
+    app = make_web_app(max_hands=1, coach_outputs=["Coach reply"], coach_delay=0.05)
+
+    async def scenario() -> None:
+        create_response = await app.handle_create_table(
+            FakeRequest(
+                payload={
+                    "display_name": "Alice",
+                    "total_seats": 2,
+                    "llm_seat_count": 0,
+                }
+            )
+        )
+        created = decode_json_response(create_response)
+        alice_token = created["seat_token"]
+        table_id = created["table_id"]
+
+        join_response = await app.handle_join_table(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={"display_name": "Bob"},
+            )
+        )
+        bob_token = decode_json_response(join_response)["seat_token"]
+
+        await app.handle_start_table(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={"seat_token": alice_token},
+            )
+        )
+        await asyncio.sleep(0.02)
+
+        bob_coach_response = await app.handle_request_coach(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={
+                    "seat_token": bob_token,
+                },
+            )
+        )
+        assert bob_coach_response.status == 400
+
+        pending_request = asyncio.create_task(
+            app.handle_request_coach(
+                FakeRequest(
+                    match_info={"table_id": table_id},
+                    payload={
+                        "seat_token": alice_token,
+                    },
+                )
+            )
+        )
+        await asyncio.sleep(0.01)
+
+        pending_state = decode_json_response(
+            await app.handle_table_state(
+                FakeRequest(
+                    match_info={"table_id": table_id},
+                    query={"seat_token": alice_token},
+                )
+            )
+        )
+        assert pending_state["controls"]["can_request_coach"] is True
+
+        action_response = await app.handle_submit_action(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={
+                    "seat_token": alice_token,
+                    "action_type": "fold",
+                },
+            )
+        )
+        assert action_response.status == 200
+
+        coach_response = decode_json_response(await pending_request)
+        assert coach_response["reply"] == "Coach reply"
+
+        final_state = decode_json_response(
+            await app.handle_table_state(
+                FakeRequest(
+                    match_info={"table_id": table_id},
+                    query={"seat_token": alice_token},
+                )
+            )
+        )
+        assert all("Coach reply" not in event["text"] for event in final_state["recent_events"])
 
     asyncio.run(scenario())
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from poker_bot.config import LLMSettings
+from poker_bot.config import CoachSettings, LLMSettings
 from poker_bot.players.llm import LLMGameClient
 from poker_bot.naming import BotNameAllocator
 from poker_bot.telegram_app.app import TelegramApp, TelegramAppConfig
@@ -10,8 +10,9 @@ from poker_bot.types import TelegramTableState
 
 
 class FakeResponsesAPI:
-    def __init__(self, outputs: list[str]) -> None:
+    def __init__(self, outputs: list[str], *, delay: float = 0.0) -> None:
         self.outputs = list(outputs)
+        self.delay = delay
         self.messages_list: list[list[dict[str, str]]] = []
 
     async def create(
@@ -23,6 +24,8 @@ class FakeResponsesAPI:
         extra_body: dict | None = None,
     ) -> object:
         self.messages_list.append(messages)
+        if self.delay:
+            await asyncio.sleep(self.delay)
         output = self.outputs.pop(0) if self.outputs else '{"action":"check"}'
         message = type("Message", (), {"content": output})()
         choice = type("Choice", (), {"message": message})()
@@ -30,14 +33,16 @@ class FakeResponsesAPI:
 
 
 class FakeOpenAIClient:
-    def __init__(self, outputs: list[str]) -> None:
-        self.chat = type("Chat", (), {"completions": FakeResponsesAPI(outputs)})()
+    def __init__(self, outputs: list[str], *, delay: float = 0.0) -> None:
+        self.chat = type("Chat", (), {"completions": FakeResponsesAPI(outputs, delay=delay)})()
 
 
 def make_app(
     *,
     max_hands: int | None = None,
     llm_outputs: list[str] | None = None,
+    coach_outputs: list[str] | None = None,
+    coach_delay: float = 0.0,
     llm_name_allocator: BotNameAllocator | None = None,
 ) -> tuple[TelegramApp, list[tuple[int, str, object | None]]]:
     sent_messages: list[tuple[int, str, object | None]] = []
@@ -53,14 +58,32 @@ def make_app(
             client=FakeOpenAIClient(list(llm_outputs)),
         )
 
+    def make_coach_client() -> LLMGameClient:
+        return LLMGameClient(
+            settings=CoachSettings(
+                enabled=True,
+                model="gpt-coach",
+                api_key="coach-test",
+                timeout=0.2,
+            ),
+            client=FakeOpenAIClient(list(coach_outputs or ["Coach reply"]), delay=coach_delay),
+        )
+
     app = TelegramApp(
         TelegramAppConfig(
             bot_username="test_bot",
             llm=LLMSettings(model="gpt-test", api_key="test"),
+            coach=CoachSettings(
+                enabled=coach_outputs is not None,
+                model="gpt-coach",
+                api_key="coach-test",
+                timeout=0.2,
+            ),
             max_hands_per_table=max_hands,
         ),
         send_message=send_message,
         llm_client_factory=make_llm_client,
+        coach_client_factory=make_coach_client,
         llm_name_allocator=llm_name_allocator,
     )
     return app, sent_messages
@@ -241,6 +264,44 @@ def test_mixed_table_can_complete_one_hand_and_unregister_users() -> None:
     texts = [text for _chat, text, _markup in messages]
     assert any("started with 2 seats" in text for text in texts)
     assert any("has completed" in text for text in texts)
+
+
+def test_telegram_coach_is_private_and_blocks_actions_while_pending() -> None:
+    app, messages = make_app(max_hands=1, coach_outputs=["Coach reply"], coach_delay=0.05)
+
+    async def scenario() -> None:
+        await app.handle_create_table_command(user_id=1, chat_id=101)
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        table = app.registry.get_user_table(1)
+        assert table is not None
+        await app.handle_join_command(user_id=2, chat_id=202, display_name="Bob", table_id=table.table_id)
+        await app.handle_start_game_command(user_id=1, chat_id=101)
+        await asyncio.sleep(0.01)
+
+        await app.handle_coach_command(user_id=2, chat_id=202, question="Any tips?")
+
+        pending_coach = asyncio.create_task(
+            app.handle_coach_command(
+                user_id=1,
+                chat_id=101,
+                question="Should I fold here?",
+            )
+        )
+        await asyncio.sleep(0.01)
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="Fold")
+        await pending_coach
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="Fold")
+        assert table.orchestrator_task is not None
+        await table.orchestrator_task
+
+    asyncio.run(scenario())
+
+    texts = [text for _chat, text, _markup in messages]
+    assert any("only available on your turn" in text for text in texts)
+    assert any("Coach is thinking" in text for text in texts)
+    assert any("Coach is still thinking" in text for text in texts)
+    assert any(text == "Coach reply" for text in texts)
 
 
 def test_telegram_human_and_llm_seat_names_are_assigned_cleanly() -> None:
