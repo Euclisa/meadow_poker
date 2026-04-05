@@ -13,7 +13,7 @@ from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
 from poker_bot.poker.engine import PokerEngine
 from poker_bot.table_runner import run_table
-from poker_bot.types import ActionType, PlayerAction, SeatConfig, TableConfig, TelegramTableState
+from poker_bot.types import ActionType, PlayerAction, PlayerUpdate, PlayerUpdateType, SeatConfig, TableConfig, TelegramTableState
 from poker_bot.web_app.player import WebPlayerAgent
 from poker_bot.web_app.registry import WebTableRegistry
 from poker_bot.web_app.serialization import serialize_lobby, serialize_table_snapshot
@@ -312,6 +312,7 @@ class WebApp:
             player_agents[user.seat_id] = WebPlayerAgent(
                 seat_id=user.seat_id,
                 publish_state=publish_state,
+                should_publish_update=self._should_publish_web_update,
             )
 
         for index in range(1, session.llm_seat_count + 1):
@@ -471,6 +472,12 @@ class WebApp:
             revealed_seats=revealed_seats,
             winners=winners,
         )
+
+    @staticmethod
+    def _should_publish_web_update(update: PlayerUpdate) -> bool:
+        if update.update_type != PlayerUpdateType.HAND_COMPLETED:
+            return True
+        return not any(event.event_type == "showdown_started" for event in update.events)
 
     def _authorize_view(self, session: WebTableSession, seat_token: str | None) -> str | None:
         if session.find_reservation_by_token(seat_token) is not None:

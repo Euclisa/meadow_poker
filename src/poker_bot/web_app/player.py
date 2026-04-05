@@ -26,9 +26,11 @@ class WebPlayerAgent(PlayerAgent):
         seat_id: str,
         *,
         publish_state: Callable[[], Awaitable[None]] | None = None,
+        should_publish_update: Callable[[PlayerUpdate], bool] | None = None,
     ) -> None:
         self.seat_id = seat_id
         self._publish_state = publish_state
+        self._should_publish_update = should_publish_update
         self._pending_state: _PendingState | None = None
         self._pending_future: asyncio.Future[PlayerAction] | None = None
 
@@ -51,6 +53,8 @@ class WebPlayerAgent(PlayerAgent):
 
     async def notify_update(self, update: PlayerUpdate) -> None:
         self._pending_state = None
+        if self._should_publish_update is not None and not self._should_publish_update(update):
+            return
         await self._publish()
 
     async def close(self) -> None:

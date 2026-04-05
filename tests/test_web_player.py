@@ -7,6 +7,7 @@ import pytest
 from poker_bot.types import (
     ActionType,
     DecisionRequest,
+    GameEvent,
     GamePhase,
     LegalAction,
     PlayerAction,
@@ -113,3 +114,47 @@ def test_web_player_agent_rejects_invalid_raise_amount_without_finishing_turn() 
             await task
 
     asyncio.run(scenario())
+
+
+def test_web_player_agent_can_skip_publish_for_showdown_hand_completion() -> None:
+    publishes: list[str] = []
+
+    async def publish() -> None:
+        publishes.append("tick")
+
+    def should_publish(update: PlayerUpdate) -> bool:
+        return not (
+            update.update_type == PlayerUpdateType.HAND_COMPLETED
+            and any(event.event_type == "showdown_started" for event in update.events)
+        )
+
+    agent = WebPlayerAgent("web_1", publish_state=publish, should_publish_update=should_publish)
+    decision = make_decision_request()
+    showdown_update = PlayerUpdate(
+        update_type=PlayerUpdateType.HAND_COMPLETED,
+        events=(
+            GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
+            GameEvent("showdown_revealed", {"seat_id": "web_1", "hole_cards": ("As", "Kd"), "hand_label": "straight"}),
+            GameEvent("pot_awarded", {"seat_id": "web_1", "amount": 400}),
+            GameEvent("hand_completed", {"hand_number": 1}),
+        ),
+        public_table_view=decision.public_table_view,
+        player_view=decision.player_view,
+        acting_seat_id=None,
+        is_your_turn=False,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(agent.request_action(decision))
+        await asyncio.sleep(0)
+
+        error = agent.submit_action(PlayerAction(ActionType.CALL))
+        assert error is None
+        assert await task == PlayerAction(ActionType.CALL)
+
+        await agent.notify_update(showdown_update)
+        assert agent.pending_decision is None
+
+    asyncio.run(scenario())
+
+    assert publishes == ["tick"]
