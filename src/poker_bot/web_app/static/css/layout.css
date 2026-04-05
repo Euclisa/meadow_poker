@@ -30,6 +30,7 @@
 }
 
 .hero-card {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr);
   gap: 1rem;
