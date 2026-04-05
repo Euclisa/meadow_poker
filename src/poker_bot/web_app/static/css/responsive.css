@@ -130,7 +130,8 @@
   }
 
   .summary-grid,
-  .table-card__meta {
+  .table-card__meta,
+  .settings-card__summary {
     grid-template-columns: 1fr;
   }
 }
@@ -169,9 +170,14 @@
   .table-header-card,
   .board-center__stats,
   .toolbar__summary,
-  .toolbar__join {
+  .toolbar__join,
+  .settings-card__header {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .settings-card__grid {
+    grid-template-columns: 1fr;
   }
 
   .action-dock__idle,

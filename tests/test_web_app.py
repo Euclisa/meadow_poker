@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import subprocess
 
+import pytest
+
 from poker_bot.config import CoachSettings, LLMSettings
 from poker_bot.naming import BotNameAllocator
 from poker_bot.players.llm import LLMGameClient
@@ -123,6 +125,8 @@ def test_web_app_lobby_stream_and_html_shell() -> None:
         initial_lobby = app._lobby_snapshot()
         assert initial_lobby["tables"] == []
         assert initial_lobby["defaults"]["max_players"] == 6
+        assert initial_lobby["defaults"]["big_blind"] == 100
+        assert initial_lobby["defaults"]["stack_depth"] == 20
 
         queue = app.registry.subscribe_lobby()
         try:
@@ -132,6 +136,8 @@ def test_web_app_lobby_stream_and_html_shell() -> None:
                         "display_name": "Alice",
                         "total_seats": 3,
                         "llm_seat_count": 1,
+                        "big_blind": 100,
+                        "stack_depth": 20,
                     }
                 )
             )
@@ -165,6 +171,8 @@ def test_web_app_two_player_table_invalid_action_then_fold_completion() -> None:
                     "display_name": "Alice",
                     "total_seats": 2,
                     "llm_seat_count": 0,
+                    "big_blind": 100,
+                    "stack_depth": 20,
                 }
             )
         )
@@ -265,6 +273,97 @@ def test_web_app_two_player_table_invalid_action_then_fold_completion() -> None:
     asyncio.run(scenario())
 
 
+def test_web_app_create_table_uses_selected_game_presets() -> None:
+    app = make_web_app(max_hands=1)
+
+    async def scenario() -> None:
+        create_response = await app.handle_create_table(
+            FakeRequest(
+                payload={
+                    "display_name": "Alice",
+                    "total_seats": 2,
+                    "llm_seat_count": 0,
+                    "big_blind": 200,
+                    "stack_depth": 40,
+                }
+            )
+        )
+        created = decode_json_response(create_response)
+        table_id = created["table_id"]
+        alice_token = created["seat_token"]
+
+        waiting_snapshot = created["snapshot"]
+        assert waiting_snapshot["config_summary"]["small_blind"] == 100
+        assert waiting_snapshot["config_summary"]["big_blind"] == 200
+        assert waiting_snapshot["config_summary"]["starting_stack"] == 8000
+        assert waiting_snapshot["config_summary"]["stack_depth"] == 40
+
+        lobby_snapshot = app._lobby_snapshot()
+        assert lobby_snapshot["tables"][0]["big_blind"] == 200
+        assert lobby_snapshot["tables"][0]["starting_stack"] == 8000
+        assert lobby_snapshot["tables"][0]["stack_depth"] == 40
+
+        join_response = await app.handle_join_table(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={"display_name": "Bob"},
+            )
+        )
+        bob_token = decode_json_response(join_response)["seat_token"]
+
+        start_response = await app.handle_start_table(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={"seat_token": alice_token},
+            )
+        )
+        assert start_response.status == 200
+        await asyncio.sleep(0.05)
+
+        running_snapshot = await _fetch_table_snapshot(app, table_id=table_id, seat_token=bob_token)
+        assert running_snapshot["config_summary"]["starting_stack"] == 8000
+        assert running_snapshot["config_summary"]["stack_depth"] == 40
+        assert running_snapshot["public_table"]["small_blind"] == 100
+        assert running_snapshot["public_table"]["big_blind"] == 200
+
+    asyncio.run(scenario())
+
+
+def test_web_app_rejects_game_settings_outside_supported_presets() -> None:
+    app = make_web_app()
+
+    async def scenario() -> None:
+        with pytest.raises(app._require_aiohttp().HTTPBadRequest) as big_blind_error:
+            await app.handle_create_table(
+                FakeRequest(
+                    payload={
+                        "display_name": "Alice",
+                        "total_seats": 2,
+                        "llm_seat_count": 0,
+                        "big_blind": 125,
+                        "stack_depth": 20,
+                    }
+                )
+            )
+        assert "big_blind" in big_blind_error.value.text
+
+        with pytest.raises(app._require_aiohttp().HTTPBadRequest) as stack_depth_error:
+            await app.handle_create_table(
+                FakeRequest(
+                    payload={
+                        "display_name": "Alice",
+                        "total_seats": 2,
+                        "llm_seat_count": 0,
+                        "big_blind": 100,
+                        "stack_depth": 33,
+                    }
+                )
+            )
+        assert "stack_depth" in stack_depth_error.value.text
+
+    asyncio.run(scenario())
+
+
 def test_web_app_llm_table_can_complete_and_preserve_token_rejoin() -> None:
     app = make_web_app(max_hands=1, llm_outputs=['{"action":"check"}'] * 20)
 
@@ -275,6 +374,8 @@ def test_web_app_llm_table_can_complete_and_preserve_token_rejoin() -> None:
                     "display_name": "Alice",
                     "total_seats": 2,
                     "llm_seat_count": 1,
+                    "big_blind": 100,
+                    "stack_depth": 20,
                 }
             )
         )
@@ -344,6 +445,8 @@ def test_web_app_coach_request_is_private_and_actions_can_continue() -> None:
                     "display_name": "Alice",
                     "total_seats": 2,
                     "llm_seat_count": 0,
+                    "big_blind": 100,
+                    "stack_depth": 20,
                 }
             )
         )
@@ -436,6 +539,8 @@ def test_web_table_state_exposes_per_street_contributions() -> None:
                     "display_name": "Alice",
                     "total_seats": 2,
                     "llm_seat_count": 0,
+                    "big_blind": 100,
+                    "stack_depth": 20,
                 }
             )
         )
@@ -529,6 +634,8 @@ def test_web_app_showdown_pause_exposes_revealed_cards_and_then_starts_next_hand
                     "display_name": "Alice",
                     "total_seats": 2,
                     "llm_seat_count": 0,
+                    "big_blind": 100,
+                    "stack_depth": 20,
                 }
             )
         )
@@ -591,6 +698,8 @@ def test_web_app_folded_hand_does_not_expose_showdown_state() -> None:
                     "display_name": "Alice",
                     "total_seats": 2,
                     "llm_seat_count": 0,
+                    "big_blind": 100,
+                    "stack_depth": 20,
                 }
             )
         )
@@ -638,6 +747,7 @@ def test_rendered_table_markup_shows_showdown_cards_and_seat_amount_badge() -> N
             "small_blind": 50,
             "big_blind": 100,
             "starting_stack": 2000,
+            "stack_depth": 20,
         },
         "waiting_players": [],
         "controls": {

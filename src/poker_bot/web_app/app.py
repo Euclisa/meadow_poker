@@ -29,6 +29,8 @@ from poker_bot.web_app.session import (
 logger = logging.getLogger(__name__)
 
 _STATIC_DIR = Path(__file__).with_name("static")
+_DEFAULT_BIG_BLIND_PRESETS = (20, 50, 100, 200, 500)
+_DEFAULT_STACK_DEPTH_PRESETS = (20, 40, 100, 200)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +41,8 @@ class WebAppConfig:
     big_blind: int = 100
     starting_stack: int = 2_000
     max_players: int = 6
+    big_blind_presets: tuple[int, ...] = _DEFAULT_BIG_BLIND_PRESETS
+    stack_depth_presets: tuple[int, ...] = _DEFAULT_STACK_DEPTH_PRESETS
     llm: LLMSettings = field(default_factory=LLMSettings)
     coach: CoachSettings = field(default_factory=CoachSettings)
     max_hands_per_table: int | None = None
@@ -122,13 +126,26 @@ class WebApp:
         display_name = self._normalize_display_name(payload.get("display_name"))
         total_seats = self._parse_int(payload.get("total_seats"))
         llm_seat_count = self._parse_int(payload.get("llm_seat_count"))
-        self._validate_table_request(total_seats=total_seats, llm_seat_count=llm_seat_count)
+        big_blind = self._parse_int(payload.get("big_blind"))
+        stack_depth = self._parse_int(payload.get("stack_depth"))
+        self._validate_table_request(
+            total_seats=total_seats,
+            llm_seat_count=llm_seat_count,
+            big_blind=big_blind,
+            stack_depth=stack_depth,
+        )
+        assert total_seats is not None
+        assert llm_seat_count is not None
+        assert big_blind is not None
+        assert stack_depth is not None
 
         session, reservation = self.registry.create_waiting_table(
             creator_name=display_name,
             request=WebTableCreateRequest(
                 total_seats=total_seats,
                 llm_seat_count=llm_seat_count,
+                big_blind=big_blind,
+                stack_depth=stack_depth,
             ),
         )
         self._sync_waiting_message(session)
@@ -367,10 +384,10 @@ class WebApp:
 
         engine = PokerEngine.create_table(
             TableConfig(
-                small_blind=self.config.small_blind,
-                big_blind=self.config.big_blind,
-                starting_stack=self.config.starting_stack,
-                max_players=self.config.max_players,
+                small_blind=session.request.small_blind,
+                big_blind=session.request.big_blind,
+                starting_stack=session.request.starting_stack,
+                max_players=session.total_seats,
             ),
             seat_configs,
         )
@@ -474,11 +491,18 @@ class WebApp:
 
     def _lobby_snapshot(self) -> dict[str, Any]:
         snapshot = serialize_lobby(self.registry)
+        big_blind_presets = self._big_blind_presets()
+        stack_depth_presets = self._stack_depth_presets()
+        default_big_blind = self._default_big_blind()
+        default_stack_depth = self._default_stack_depth(default_big_blind)
         snapshot["defaults"] = {
             "max_players": self.config.max_players,
-            "small_blind": self.config.small_blind,
-            "big_blind": self.config.big_blind,
-            "starting_stack": self.config.starting_stack,
+            "small_blind": default_big_blind // 2,
+            "big_blind": default_big_blind,
+            "starting_stack": default_big_blind * default_stack_depth,
+            "stack_depth": default_stack_depth,
+            "big_blind_presets": list(big_blind_presets),
+            "stack_depth_presets": list(stack_depth_presets),
             "max_hands_per_table": self.config.max_hands_per_table,
         }
         return snapshot
@@ -487,10 +511,10 @@ class WebApp:
         return serialize_table_snapshot(
             session,
             seat_token=seat_token,
-            small_blind=self.config.small_blind,
-            big_blind=self.config.big_blind,
-            starting_stack=self.config.starting_stack,
-            max_players=self.config.max_players,
+            small_blind=session.request.small_blind,
+            big_blind=session.request.big_blind,
+            starting_stack=session.request.starting_stack,
+            max_players=session.total_seats,
             max_hands_per_table=self.config.max_hands_per_table,
         )
 
@@ -552,7 +576,14 @@ class WebApp:
             f"{'' if session.open_web_seat_count() == 1 else 's'}."
         )
 
-    def _validate_table_request(self, *, total_seats: int | None, llm_seat_count: int | None) -> None:
+    def _validate_table_request(
+        self,
+        *,
+        total_seats: int | None,
+        llm_seat_count: int | None,
+        big_blind: int | None,
+        stack_depth: int | None,
+    ) -> None:
         if total_seats is None or not 2 <= total_seats <= self.config.max_players:
             raise self._require_aiohttp().HTTPBadRequest(
                 text=f"total_seats must be between 2 and {self.config.max_players}."
@@ -561,6 +592,35 @@ class WebApp:
             raise self._require_aiohttp().HTTPBadRequest(
                 text=f"llm_seat_count must be between 0 and {total_seats - 1}."
             )
+        if big_blind is None or big_blind not in self._big_blind_presets():
+            raise self._require_aiohttp().HTTPBadRequest(
+                text="big_blind must match one of the supported blind presets."
+            )
+        if stack_depth is None or stack_depth not in self._stack_depth_presets():
+            raise self._require_aiohttp().HTTPBadRequest(
+                text="stack_depth must match one of the supported stack presets."
+            )
+
+    def _big_blind_presets(self) -> tuple[int, ...]:
+        default_big_blind = self._default_big_blind()
+        valid_presets = {preset for preset in self.config.big_blind_presets if preset > 0 and preset % 2 == 0}
+        return tuple(sorted({*valid_presets, default_big_blind}))
+
+    def _stack_depth_presets(self) -> tuple[int, ...]:
+        default_stack_depth = self._default_stack_depth(self._default_big_blind())
+        valid_presets = {preset for preset in self.config.stack_depth_presets if preset > 0}
+        return tuple(sorted({*valid_presets, default_stack_depth}))
+
+    def _default_big_blind(self) -> int:
+        default_big_blind = self.config.big_blind
+        if default_big_blind <= 0:
+            default_big_blind = 100
+        if default_big_blind % 2 != 0:
+            default_big_blind += 1
+        return default_big_blind
+
+    def _default_stack_depth(self, big_blind: int) -> int:
+        return max(1, round(self.config.starting_stack / max(1, big_blind)))
 
     def _default_llm_client_factory(self) -> LLMGameClient:
         if self.config.llm.model is None or self.config.llm.api_key is None:

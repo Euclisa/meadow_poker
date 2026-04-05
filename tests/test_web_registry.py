@@ -11,7 +11,7 @@ def test_web_registry_create_join_rejoin_and_waiting_list() -> None:
     registry = WebTableRegistry()
     session, creator = registry.create_waiting_table(
         creator_name="Alice",
-        request=WebTableCreateRequest(total_seats=3, llm_seat_count=1),
+        request=WebTableCreateRequest(total_seats=3, llm_seat_count=1, big_blind=100, stack_depth=20),
     )
 
     assert session.table_id
@@ -36,7 +36,7 @@ def test_web_registry_creator_cannot_leave_and_running_table_leaves_waiting_inde
     registry = WebTableRegistry()
     session, creator = registry.create_waiting_table(
         creator_name="Alice",
-        request=WebTableCreateRequest(total_seats=2, llm_seat_count=0),
+        request=WebTableCreateRequest(total_seats=2, llm_seat_count=0, big_blind=100, stack_depth=20),
     )
     _session, bob = registry.join_table(table_id=session.table_id, display_name="Bob")
 

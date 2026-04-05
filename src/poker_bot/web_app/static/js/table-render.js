@@ -220,6 +220,7 @@ function renderToolbar(snapshot, { joinName = "", busy = false, coachPending = f
           <span class="chip chip--soft">${summary.llm_seats} bots</span>
           <span class="chip chip--soft">${formatChips(summary.small_blind)} / ${formatChips(summary.big_blind)}</span>
           <span class="chip chip--soft">Stack ${formatChips(summary.starting_stack)}</span>
+          <span class="chip chip--soft">${summary.stack_depth} BB</span>
         </div>
         <form id="join-seat-form" class="toolbar__join">
           <label class="field toolbar__field">

@@ -14,10 +14,20 @@ from poker_bot.types import TelegramTableState
 class WebTableCreateRequest:
     total_seats: int
     llm_seat_count: int
+    big_blind: int
+    stack_depth: int
 
     @property
     def web_seat_count(self) -> int:
         return self.total_seats - self.llm_seat_count
+
+    @property
+    def small_blind(self) -> int:
+        return self.big_blind // 2
+
+    @property
+    def starting_stack(self) -> int:
+        return self.big_blind * self.stack_depth
 
 
 @dataclass(frozen=True, slots=True)

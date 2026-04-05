@@ -16,6 +16,10 @@ const appRoot = document.getElementById("app");
 const state = {
   lobby: null,
   createName: "",
+  createTotalSeats: "",
+  createLlmSeats: "",
+  createBigBlind: "",
+  createStackDepth: "",
   joinName: "",
   joinCode: "",
   busy: false,
@@ -39,14 +43,49 @@ export function renderLobbyMarkup(model) {
   const tables = model.lobby?.tables ?? [];
   const defaults = model.lobby?.defaults ?? {
     max_players: 6,
-    small_blind: 50,
     big_blind: 100,
+    small_blind: 50,
     starting_stack: 2000,
+    stack_depth: 20,
+    big_blind_presets: [20, 50, 100, 200, 500],
+    stack_depth_presets: [20, 40, 100, 200],
   };
+  const selectedTotalSeats = Number(model.createTotalSeats || Math.min(4, defaults.max_players));
+  const selectedLlmSeats = Math.min(
+    Number(model.createLlmSeats || 1),
+    Math.max(0, selectedTotalSeats - 1),
+  );
+  const selectedBigBlind = Number(model.createBigBlind || defaults.big_blind);
+  const selectedStackDepth = Number(model.createStackDepth || defaults.stack_depth);
+  const selectedSmallBlind = Math.max(1, Math.floor(selectedBigBlind / 2));
+  const selectedStartingStack = selectedBigBlind * selectedStackDepth;
+
   const playerOptions = Array.from({ length: Math.max(0, defaults.max_players - 1) }, (_, index) => index + 2)
     .map(
       (count) => `
-        <option value="${count}" ${count === 4 ? "selected" : ""}>${count} seats</option>
+        <option value="${count}" ${count === selectedTotalSeats ? "selected" : ""}>${count} seats</option>
+      `,
+    )
+    .join("");
+  const llmOptions = Array.from({ length: Math.max(0, selectedTotalSeats) }, (_, index) => index)
+    .filter((count) => count < selectedTotalSeats)
+    .map(
+      (count) => `
+        <option value="${count}" ${count === selectedLlmSeats ? "selected" : ""}>${count} bot${count === 1 ? "" : "s"}</option>
+      `,
+    )
+    .join("");
+  const bigBlindOptions = defaults.big_blind_presets
+    .map(
+      (amount) => `
+        <option value="${amount}" ${amount === selectedBigBlind ? "selected" : ""}>${formatChips(amount)}</option>
+      `,
+    )
+    .join("");
+  const stackDepthOptions = defaults.stack_depth_presets
+    .map(
+      (depth) => `
+        <option value="${depth}" ${depth === selectedStackDepth ? "selected" : ""}>${depth} BB</option>
       `,
     )
     .join("");
@@ -62,14 +101,6 @@ export function renderLobbyMarkup(model) {
           </p>
         </div>
         <div class="hero-card__stats">
-          <div class="stat-pill">
-            <span>Blinds</span>
-            <strong>${formatChips(defaults.small_blind)} / ${formatChips(defaults.big_blind)}</strong>
-          </div>
-          <div class="stat-pill">
-            <span>Stack</span>
-            <strong>${formatChips(defaults.starting_stack)}</strong>
-          </div>
           <div class="stat-pill">
             <span>Open tables</span>
             <strong>${tables.length}</strong>
@@ -100,15 +131,41 @@ export function renderLobbyMarkup(model) {
             </label>
             <label class="field">
               <span>LLM seats</span>
-              <select id="create-llm-seats" name="llm_seat_count">
-                <option value="0">0 bots</option>
-                <option value="1" selected>1 bot</option>
-                <option value="2">2 bots</option>
-                <option value="3">3 bots</option>
-                <option value="4">4 bots</option>
-                <option value="5">5 bots</option>
-              </select>
+              <select id="create-llm-seats" name="llm_seat_count">${llmOptions}</select>
             </label>
+            <section class="settings-card">
+              <div class="settings-card__header">
+                <div>
+                  <p class="eyebrow">Game Settings</p>
+                  <h3>Choose the pace</h3>
+                </div>
+                <span class="chip chip--soft">${formatChips(selectedSmallBlind)} / ${formatChips(selectedBigBlind)}</span>
+              </div>
+              <div class="settings-card__grid">
+                <label class="field">
+                  <span>Big blind</span>
+                  <select id="create-big-blind" name="big_blind">${bigBlindOptions}</select>
+                </label>
+                <label class="field">
+                  <span>Starting stack</span>
+                  <select id="create-stack-depth" name="stack_depth">${stackDepthOptions}</select>
+                </label>
+              </div>
+              <div class="settings-card__summary">
+                <div class="settings-stat">
+                  <span>Blinds</span>
+                  <strong>${formatChips(selectedSmallBlind)} / ${formatChips(selectedBigBlind)}</strong>
+                </div>
+                <div class="settings-stat">
+                  <span>Stack</span>
+                  <strong>${formatChips(selectedStartingStack)}</strong>
+                </div>
+                <div class="settings-stat">
+                  <span>Depth</span>
+                  <strong>${selectedStackDepth} BB</strong>
+                </div>
+              </div>
+            </section>
             <button class="button button--primary" ${model.busy ? "disabled" : ""} type="submit">Create table</button>
           </form>
         </article>
@@ -158,6 +215,8 @@ export function renderLobbyMarkup(model) {
                         <dl class="table-card__meta">
                           <div><dt>Seats</dt><dd>${table.claimed_web_seats}/${table.web_seats} web</dd></div>
                           <div><dt>Bots</dt><dd>${table.llm_seats}</dd></div>
+                          <div><dt>Blinds</dt><dd>${formatChips(table.small_blind)} / ${formatChips(table.big_blind)}</dd></div>
+                          <div><dt>Stack</dt><dd>${formatChips(table.starting_stack)} (${table.stack_depth} BB)</dd></div>
                           <div><dt>Players</dt><dd>${table.waiting_players.map((player) => escapeHtml(player.display_name)).join(", ")}</dd></div>
                         </dl>
                         <div class="table-card__actions">
@@ -186,8 +245,6 @@ function render() {
     initialized = true;
     bindDelegatedEvents();
   }
-
-  syncLlmSeatOptions();
 }
 
 function bindDelegatedEvents() {
@@ -210,8 +267,18 @@ function bindDelegatedEvents() {
 
   appRoot.addEventListener("change", (event) => {
     if (event.target.id === "create-total-seats") {
-      syncLlmSeatOptions();
+      state.createTotalSeats = event.target.value;
+      const maxBots = Math.max(0, Number(event.target.value || 2) - 1);
+      if (Number(state.createLlmSeats || 1) > maxBots) {
+        state.createLlmSeats = String(maxBots);
+      }
+      render();
+      return;
     }
+    if (event.target.id === "create-llm-seats") { state.createLlmSeats = event.target.value; }
+    if (event.target.id === "create-big-blind") { state.createBigBlind = event.target.value; }
+    if (event.target.id === "create-stack-depth") { state.createStackDepth = event.target.value; }
+    render();
   });
 
   appRoot.addEventListener("submit", (event) => {
@@ -219,21 +286,6 @@ function bindDelegatedEvents() {
     if (form?.id === "create-table-form") { onCreateTable(event); }
     if (form?.id === "join-table-form") { onJoinTable(event); }
   });
-}
-
-function syncLlmSeatOptions() {
-  const totalSeatsInput = document.getElementById("create-total-seats");
-  const llmSeatsInput = document.getElementById("create-llm-seats");
-  if (!totalSeatsInput || !llmSeatsInput) {
-    return;
-  }
-  const totalSeats = Number(totalSeatsInput.value || 2);
-  const previous = Number(llmSeatsInput.value || 0);
-  llmSeatsInput.innerHTML = Array.from({ length: Math.max(0, totalSeats) }, (_, index) => index)
-    .filter((count) => count < totalSeats)
-    .map((count) => `<option value="${count}">${count} bot${count === 1 ? "" : "s"}</option>`)
-    .join("");
-  llmSeatsInput.value = String(Math.min(previous, Math.max(0, totalSeats - 1)));
 }
 
 async function onCreateTable(event) {
@@ -250,6 +302,8 @@ async function onCreateTable(event) {
         display_name: form.get("display_name"),
         total_seats: Number(form.get("total_seats")),
         llm_seat_count: Number(form.get("llm_seat_count")),
+        big_blind: Number(form.get("big_blind")),
+        stack_depth: Number(form.get("stack_depth")),
       }),
     });
     storeSeatToken(payload.table_id, payload.seat_token);

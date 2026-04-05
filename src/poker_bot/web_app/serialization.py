@@ -24,6 +24,10 @@ def serialize_waiting_table(session: WebTableSession) -> dict[str, Any]:
         "web_seats": session.web_seat_count,
         "claimed_web_seats": session.human_player_count,
         "llm_seats": session.llm_seat_count,
+        "small_blind": session.request.small_blind,
+        "big_blind": session.request.big_blind,
+        "starting_stack": session.request.starting_stack,
+        "stack_depth": session.request.stack_depth,
         "waiting_players": [
             {
                 "display_name": user.display_name,
@@ -74,6 +78,7 @@ def serialize_table_snapshot(
             "small_blind": small_blind,
             "big_blind": big_blind,
             "starting_stack": starting_stack,
+            "stack_depth": session.request.stack_depth,
             "max_players": max_players,
             "max_hands_per_table": max_hands_per_table,
             "share_path": f"/table/{session.table_id}",
