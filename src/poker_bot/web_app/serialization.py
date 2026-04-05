@@ -191,6 +191,7 @@ def _serialize_seat(seat: SeatSnapshot, *, is_human: bool, is_viewer: bool) -> d
         "name": seat.name,
         "stack": seat.stack,
         "contribution": seat.contribution,
+        "street_contribution": seat.street_contribution,
         "folded": seat.folded,
         "all_in": seat.all_in,
         "in_hand": seat.in_hand,

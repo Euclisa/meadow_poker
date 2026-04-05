@@ -110,15 +110,9 @@ function renderTableSurface(snapshot) {
       <div class="table-surface__rail"></div>
       <div class="table-surface__center">
         <div class="board-center">
-          <div class="board-center__headline">
-            <p class="eyebrow">Common Cards</p>
-            <span class="chip chip--soft">${prettyPhaseLabel(publicTable.phase)}</span>
-          </div>
           <div class="card-row card-row--board">${renderCards(publicTable.board_cards, { large: true })}</div>
           <div class="board-center__stats">
             <span class="chip">Pot ${formatChips(publicTable.pot_total)}</span>
-            <span class="chip chip--soft">Bet ${formatChips(publicTable.current_bet)}</span>
-            <span class="chip chip--soft">Hand ${publicTable.hand_number}</span>
           </div>
         </div>
       </div>
@@ -150,10 +144,10 @@ function renderSeatPanel({ seat, publicTable, playerView, seatCount, displayInde
       ? `${renderCard("xx", { hidden: true })}${renderCard("xx", { hidden: true })}`
       : "";
 
-  const betMarkup = seat.contribution > 0
+  const betMarkup = seat.street_contribution > 0
     ? `<div class="table-seat__bet table-seat__bet--${betSide}">
         <span class="chip-icon" aria-hidden="true"></span>
-        <span class="table-seat__bet-amount">${formatChips(seat.contribution)}</span>
+        <span class="table-seat__bet-amount">${formatChips(seat.street_contribution)}</span>
       </div>`
     : "";
 

@@ -89,14 +89,6 @@
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
-.board-center__headline {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.45rem;
-  flex-wrap: wrap;
-}
-
 .board-center .playing-card--large {
   width: 2.7rem;
   height: 3.8rem;

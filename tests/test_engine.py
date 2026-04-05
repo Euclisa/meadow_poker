@@ -247,6 +247,33 @@ def test_raise_below_minimum_is_rejected_but_exact_minimum_is_allowed() -> None:
     assert exact_minimum.ok is True
 
 
+def test_seat_snapshot_exposes_street_contribution_that_resets_on_new_street() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(2_000, 2_000),
+    )
+    engine.start_next_hand()
+
+    preflop_view = engine.get_public_table_view()
+    preflop_seats = {seat.seat_id: seat for seat in preflop_view.seats}
+    assert preflop_seats["p1"].contribution == 50
+    assert preflop_seats["p1"].street_contribution == 50
+    assert preflop_seats["p2"].contribution == 100
+    assert preflop_seats["p2"].street_contribution == 100
+
+    assert engine.apply_action("p1", PlayerAction(ActionType.CALL)).ok is True
+    flop_entry = engine.apply_action("p2", PlayerAction(ActionType.CHECK))
+    assert flop_entry.ok is True
+    assert any(event.event_type == "street_started" and event.payload["phase"] == "flop" for event in flop_entry.events)
+
+    flop_view = engine.get_public_table_view()
+    flop_seats = {seat.seat_id: seat for seat in flop_view.seats}
+    assert flop_seats["p1"].contribution == 100
+    assert flop_seats["p1"].street_contribution == 0
+    assert flop_seats["p2"].contribution == 100
+    assert flop_seats["p2"].street_contribution == 0
+
+
 def test_short_stack_all_in_raise_below_full_minimum_is_still_legal() -> None:
     engine = make_engine(
         deck=("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"),

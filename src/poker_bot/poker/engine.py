@@ -745,6 +745,7 @@ class PokerEngine:
             all_in=seat.all_in,
             in_hand=seat.in_hand,
             position=seat.position,
+            street_contribution=seat.committed_this_street,
         )
 
     def _seat_id_or_none(self, index: int | None) -> str | None:

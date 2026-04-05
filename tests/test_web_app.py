@@ -305,6 +305,94 @@ def test_web_app_llm_table_can_complete_and_preserve_token_rejoin() -> None:
     asyncio.run(scenario())
 
 
+def test_web_table_state_exposes_per_street_contributions() -> None:
+    app = make_web_app()
+
+    async def scenario() -> None:
+        create_response = await app.handle_create_table(
+            FakeRequest(
+                payload={
+                    "display_name": "Alice",
+                    "total_seats": 2,
+                    "llm_seat_count": 0,
+                }
+            )
+        )
+        created = decode_json_response(create_response)
+        creator_token = created["seat_token"]
+        table_id = created["table_id"]
+
+        join_response = await app.handle_join_table(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={"display_name": "Bob"},
+            )
+        )
+        joined = decode_json_response(join_response)
+        bob_token = joined["seat_token"]
+
+        start_response = await app.handle_start_table(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={"seat_token": creator_token},
+            )
+        )
+        assert start_response.status == 200
+        await asyncio.sleep(0.05)
+
+        preflop_state = await app.handle_table_state(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                query={"seat_token": creator_token},
+            )
+        )
+        preflop_snapshot = decode_json_response(preflop_state)
+        preflop_seats = {seat["seat_id"]: seat for seat in preflop_snapshot["public_table"]["seats"]}
+        assert preflop_seats["web_1"]["contribution"] == 50
+        assert preflop_seats["web_1"]["street_contribution"] == 50
+        assert preflop_seats["web_2"]["contribution"] == 100
+        assert preflop_seats["web_2"]["street_contribution"] == 100
+
+        call_response = await app.handle_submit_action(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={
+                    "seat_token": creator_token,
+                    "action_type": "call",
+                },
+            )
+        )
+        assert call_response.status == 200
+        await asyncio.sleep(0.05)
+
+        check_response = await app.handle_submit_action(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                payload={
+                    "seat_token": bob_token,
+                    "action_type": "check",
+                },
+            )
+        )
+        assert check_response.status == 200
+        await asyncio.sleep(0.05)
+
+        flop_state = await app.handle_table_state(
+            FakeRequest(
+                match_info={"table_id": table_id},
+                query={"seat_token": bob_token},
+            )
+        )
+        flop_snapshot = decode_json_response(flop_state)
+        flop_seats = {seat["seat_id"]: seat for seat in flop_snapshot["public_table"]["seats"]}
+        assert flop_seats["web_1"]["contribution"] == 100
+        assert flop_seats["web_1"]["street_contribution"] == 0
+        assert flop_seats["web_2"]["contribution"] == 100
+        assert flop_seats["web_2"]["street_contribution"] == 0
+
+    asyncio.run(scenario())
+
+
 def test_frontend_static_files_exist_and_include_core_hooks() -> None:
     js_dir = Path("src/poker_bot/web_app/static/js")
     css_dir = Path("src/poker_bot/web_app/static/css")

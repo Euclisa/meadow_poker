@@ -107,6 +107,7 @@ class SeatSnapshot:
     all_in: bool
     in_hand: bool
     position: str | None
+    street_contribution: int = 0
 
 
 @dataclass(frozen=True, slots=True)
