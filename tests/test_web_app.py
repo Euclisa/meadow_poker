@@ -777,6 +777,7 @@ def test_web_app_completed_hand_exposes_replay_link_and_replay_snapshot() -> Non
         completed_snapshot = await _fetch_table_snapshot(app, table_id=table_id, seat_token=alice_token)
         assert completed_snapshot["completed_hands"]
         assert completed_snapshot["completed_hands"][0]["hand_number"] == 1
+        assert len(app.registry.get_table(table_id).orchestrator.completed_hand_archives) == 1
 
         replay_page = await app.handle_replay_page(
             FakeRequest(match_info={"table_id": table_id, "hand_number": "1"})
@@ -804,7 +805,7 @@ def test_web_app_completed_hand_exposes_replay_link_and_replay_snapshot() -> Non
         final_replay_state = await app.handle_replay_state(
             FakeRequest(
                 match_info={"table_id": table_id, "hand_number": "1"},
-                query={"seat_token": alice_token, "step": "1"},
+                query={"seat_token": alice_token, "step": "2"},
             )
         )
         final_replay_snapshot = decode_json_response(final_replay_state)

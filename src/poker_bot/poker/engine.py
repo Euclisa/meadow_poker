@@ -17,15 +17,16 @@ from poker_bot.types import (
     ActionResult,
     ActionType,
     ActionValidationError,
+    AutomaticProgressResult,
     DecisionRequest,
     GameEvent,
     GamePhase,
-    HandReplaySeed,
+    HandSeatState,
+    HandStateSnapshot,
     LegalAction,
     PlayerAction,
     PlayerView,
     PublicTableView,
-    ReplaySeatState,
     SeatConfig,
     SeatSnapshot,
     TableConfig,
@@ -99,52 +100,55 @@ class PokerEngine:
         return cls(config=config, seats=seats)
 
     @classmethod
-    def from_hand_replay_seed(cls, seed: HandReplaySeed, deck_order: str) -> "PokerEngine":
+    def from_hand_state_snapshot(cls, snapshot: HandStateSnapshot) -> "PokerEngine":
         seats = [
             SeatConfig(seat_id=seat.seat_id, name=seat.name, starting_stack=max(1, seat.stack))
-            for seat in seed.seats
+            for seat in snapshot.seats
         ]
         engine = cls(
             config=TableConfig(
-                small_blind=seed.small_blind,
-                big_blind=seed.big_blind,
+                small_blind=snapshot.small_blind,
+                big_blind=snapshot.big_blind,
                 starting_stack=1,
                 min_players=2,
                 max_players=max(2, len(seats)),
-                deck_factory=OrderedDeckFactory(deck_order),
+                deck_factory=OrderedDeckFactory(snapshot.remaining_deck_order),
             ),
             seats=seats,
         )
-        engine._phase = seed.phase
-        engine._hand_number = seed.hand_number
-        engine._board_cards = list(seed.board_cards)
-        engine._current_bet = seed.current_bet
-        engine._last_full_raise_amount = seed.last_full_raise_amount
-        engine._last_full_raise_to = seed.last_full_raise_to
-        engine._dealer_index = engine._index_of_optional_seat(seed.dealer_seat_id, default=-1)
-        engine._acting_index = engine._index_of_optional_seat(seed.acting_seat_id)
-        engine._small_blind_index = engine._index_of_optional_seat(seed.small_blind_seat_id)
-        engine._big_blind_index = engine._index_of_optional_seat(seed.big_blind_seat_id)
-        engine._deck = OrderedDeckFactory(deck_order).create_hand_deck(seed.hand_number)
+        engine._phase = snapshot.phase
+        engine._hand_number = snapshot.hand_number
+        engine._board_cards = list(snapshot.board_cards)
+        engine._current_bet = snapshot.current_bet
+        engine._last_full_raise_amount = snapshot.last_full_raise_amount
+        engine._last_full_raise_to = snapshot.last_full_raise_to
+        engine._dealer_index = engine._index_of_optional_seat(snapshot.dealer_seat_id, default=-1)
+        engine._acting_index = engine._index_of_optional_seat(snapshot.acting_seat_id)
+        engine._small_blind_index = engine._index_of_optional_seat(snapshot.small_blind_seat_id)
+        engine._big_blind_index = engine._index_of_optional_seat(snapshot.big_blind_seat_id)
+        engine._deck = OrderedDeckFactory(snapshot.remaining_deck_order).create_hand_deck(snapshot.hand_number)
 
-        for replay_seat in seed.seats:
-            seat = engine._require_seat(replay_seat.seat_id)
-            seat.stack = replay_seat.stack
-            seat.hole_cards = list(replay_seat.hole_cards)
-            seat.folded = replay_seat.folded
-            seat.all_in = replay_seat.all_in
-            seat.in_hand = replay_seat.in_hand
-            seat.committed_this_street = replay_seat.committed_this_street
-            seat.committed_this_hand = replay_seat.committed_this_hand
-            seat.has_acted_this_round = replay_seat.has_acted_this_round
-            seat.last_action_bet_level = replay_seat.last_action_bet_level
-            seat.position = replay_seat.position
+        for snapshot_seat in snapshot.seats:
+            seat = engine._require_seat(snapshot_seat.seat_id)
+            seat.stack = snapshot_seat.stack
+            seat.hole_cards = list(snapshot_seat.hole_cards)
+            seat.folded = snapshot_seat.folded
+            seat.all_in = snapshot_seat.all_in
+            seat.in_hand = snapshot_seat.in_hand
+            seat.committed_this_street = snapshot_seat.committed_this_street
+            seat.committed_this_hand = snapshot_seat.committed_this_hand
+            seat.has_acted_this_round = snapshot_seat.has_acted_this_round
+            seat.last_action_bet_level = snapshot_seat.last_action_bet_level
+            seat.position = snapshot_seat.position
         return engine
 
     def get_phase(self) -> GamePhase:
         return self._phase
 
     def get_acting_seat(self) -> str | None:
+        if self.has_pending_automatic_progress():
+            return None
+        self._ensure_acting_index_ready()
         if self._acting_index is None:
             return None
         return self._seats[self._acting_index].seat_id
@@ -176,7 +180,7 @@ class PokerEngine:
             public_table=self.get_public_table_view(),
         )
 
-    def export_hand_replay_seed(self) -> HandReplaySeed:
+    def export_hand_state_snapshot(self) -> HandStateSnapshot:
         if self._phase not in {
             GamePhase.PREFLOP,
             GamePhase.FLOP,
@@ -184,9 +188,12 @@ class PokerEngine:
             GamePhase.RIVER,
             GamePhase.SHOWDOWN,
             GamePhase.HAND_COMPLETE,
+            GamePhase.TABLE_COMPLETE,
         }:
-            raise RuntimeError("Replay seeds can only be exported for an active or completed hand")
-        return HandReplaySeed(
+            raise RuntimeError("Hand state snapshots can only be exported for an active or completed hand")
+        if self._deck is None:
+            raise RuntimeError("Hand deck has not been initialized")
+        return HandStateSnapshot(
             hand_number=self._hand_number,
             phase=self._phase,
             board_cards=tuple(self._board_cards),
@@ -194,12 +201,13 @@ class PokerEngine:
             last_full_raise_amount=self._last_full_raise_amount,
             last_full_raise_to=self._last_full_raise_to,
             dealer_seat_id=self._seat_id_or_none(self._dealer_index),
-            acting_seat_id=self.get_acting_seat(),
+            acting_seat_id=self._seat_id_or_none(self._acting_index),
             small_blind_seat_id=self._seat_id_or_none(self._small_blind_index),
             big_blind_seat_id=self._seat_id_or_none(self._big_blind_index),
             small_blind=self.config.small_blind,
             big_blind=self.config.big_blind,
-            seats=tuple(self._replay_seat_state(seat) for seat in self._seats),
+            remaining_deck_order=encode_card_order(self._deck.card_order()),
+            seats=tuple(self._hand_seat_state(seat) for seat in self._seats),
         )
 
     def export_remaining_deck_order(self) -> str:
@@ -221,6 +229,9 @@ class PokerEngine:
         )
 
     def get_legal_actions(self, seat_id: str) -> tuple[LegalAction, ...]:
+        if self.has_pending_automatic_progress():
+            return ()
+        self._ensure_acting_index_ready()
         seat = self._require_seat(seat_id)
         if self.get_acting_seat() != seat_id:
             return ()
@@ -261,7 +272,7 @@ class PokerEngine:
                 )
         return tuple(legal_actions)
 
-    def start_next_hand(self) -> ActionResult:
+    def start_next_hand(self, *, auto_resolve: bool = True) -> ActionResult:
         logger.info("Starting hand %s", self._hand_number + 1)
         if not self.is_table_active():
             return self._terminate_table(
@@ -332,10 +343,11 @@ class PokerEngine:
             self._board_cards,
             {seat.seat_id: tuple(seat.hole_cards) for seat in self._seats if seat.in_hand},
         )
-        self._resolve_automatic_progress(events)
+        if auto_resolve:
+            events.extend(self.drain_automatic_progress())
         return ActionResult(ok=True, events=tuple(events), state_changed=True)
 
-    def apply_action(self, seat_id: str, action: PlayerAction) -> ActionResult:
+    def apply_action(self, seat_id: str, action: PlayerAction, *, auto_resolve: bool = True) -> ActionResult:
         logger.debug(
             "Engine apply_action seat_id=%s action=%s phase=%s current_bet=%s board=%s",
             seat_id,
@@ -351,6 +363,12 @@ class PokerEngine:
             GamePhase.RIVER,
         }:
             return self._invalid("wrong_phase", "A player action is not allowed in the current phase")
+        if self.has_pending_automatic_progress():
+            return self._invalid(
+                "automatic_progress_pending",
+                "Automatic table progress must be resolved before another player action",
+            )
+        self._ensure_acting_index_ready()
 
         if self.get_acting_seat() != seat_id:
             return self._invalid("not_your_turn", "Only the acting seat can submit an action")
@@ -435,16 +453,8 @@ class PokerEngine:
             return self._invalid("unsupported_action", "Unsupported action type")
 
         self._acting_index = self._next_action_index_from(self._index_of_seat(seat_id))
-        try:
-            self._resolve_automatic_progress(events)
-        except DeckExhaustedError:
-            return self._terminate_table(
-                code="deck_exhausted",
-                message="The hand deck ran out of cards before the hand could finish",
-                reason="deck_exhausted",
-                events=events,
-                refund_chips=True,
-            )
+        if auto_resolve:
+            events.extend(self.drain_automatic_progress())
         if self._phase in {GamePhase.PREFLOP, GamePhase.FLOP, GamePhase.TURN, GamePhase.RIVER}:
             if previous_bet != self._current_bet:
                 events.append(GameEvent("bet_updated", {"current_bet": self._current_bet}))
@@ -463,6 +473,45 @@ class PokerEngine:
 
     def is_table_active(self) -> bool:
         return sum(1 for seat in self._seats if seat.stack > 0) >= self.config.min_players
+
+    def has_pending_automatic_progress(self) -> bool:
+        return self._next_automatic_transition_kind() is not None
+
+    def resolve_automatic_step(self) -> AutomaticProgressResult:
+        transition_kind = self._next_automatic_transition_kind()
+        if transition_kind is None:
+            self._ensure_acting_index_ready()
+            return AutomaticProgressResult(advanced=False)
+
+        events: list[GameEvent] = []
+        try:
+            if transition_kind == "award_last_live_seat":
+                self._award_last_live_seat(events)
+            elif transition_kind == "advance_street":
+                self._advance_street(events)
+            elif transition_kind == "showdown":
+                self._run_showdown(events)
+            else:  # pragma: no cover - defensive against invalid helper values
+                raise RuntimeError(f"Unsupported automatic transition: {transition_kind}")
+        except DeckExhaustedError:
+            result = self._terminate_table(
+                code="deck_exhausted",
+                message="The hand deck ran out of cards before the hand could finish",
+                reason="deck_exhausted",
+                events=events,
+                refund_chips=True,
+            )
+            return AutomaticProgressResult(advanced=True, events=result.events)
+        return AutomaticProgressResult(advanced=True, events=tuple(events))
+
+    def drain_automatic_progress(self) -> tuple[GameEvent, ...]:
+        drained: list[GameEvent] = []
+        while True:
+            progress = self.resolve_automatic_step()
+            if not progress.advanced:
+                break
+            drained.extend(progress.events)
+        return tuple(drained)
 
     def _validate_action(
         self,
@@ -500,46 +549,59 @@ class PokerEngine:
             )
         return None
 
-    def _resolve_automatic_progress(self, events: list[GameEvent]) -> None:
-        while True:
-            live_seats = [seat for seat in self._seats if seat.in_hand and not seat.folded]
-            if len(live_seats) == 1:
-                winner = live_seats[0]
-                payout = sum(seat.committed_this_hand for seat in self._seats)
-                winner.stack += payout
-                events.append(
-                    GameEvent(
-                        "hand_awarded",
-                        {"seat_id": winner.seat_id, "amount": payout, "reason": "everyone_else_folded"},
-                    )
-                )
-                events.append(GameEvent("hand_completed", {"hand_number": self._hand_number}))
-                self._phase = GamePhase.HAND_COMPLETE
-                self._acting_index = None
-                return
+    def _next_automatic_transition_kind(self) -> str | None:
+        if self._phase not in {
+            GamePhase.PREFLOP,
+            GamePhase.FLOP,
+            GamePhase.TURN,
+            GamePhase.RIVER,
+        }:
+            return None
 
-            actionable = [seat for seat in live_seats if not seat.all_in]
-            if not actionable:
-                self._run_board_to_showdown(events)
-                return
+        live_seats = [seat for seat in self._seats if seat.in_hand and not seat.folded]
+        if len(live_seats) == 1:
+            return "award_last_live_seat"
 
-            if len(actionable) == 1 and actionable[0].committed_this_street == self._current_bet:
-                self._run_board_to_showdown(events)
-                return
+        actionable = [seat for seat in live_seats if not seat.all_in]
+        if not actionable:
+            return "showdown" if self._phase == GamePhase.RIVER else "advance_street"
 
-            if self._betting_round_complete():
-                if self._phase == GamePhase.RIVER:
-                    self._run_showdown(events)
-                    return
-                self._advance_street(events)
-                continue
+        if len(actionable) == 1 and actionable[0].committed_this_street == self._current_bet:
+            return "showdown" if self._phase == GamePhase.RIVER else "advance_street"
 
-            if self._acting_index is None:
-                self._acting_index = self._next_action_index_from(self._big_blind_index or 0)
-            if self._acting_index is None:
-                self._run_showdown(events)
-                return
+        if self._betting_round_complete():
+            return "showdown" if self._phase == GamePhase.RIVER else "advance_street"
+
+        return None
+
+    def _ensure_acting_index_ready(self) -> None:
+        if self._phase not in {
+            GamePhase.PREFLOP,
+            GamePhase.FLOP,
+            GamePhase.TURN,
+            GamePhase.RIVER,
+        }:
             return
+        if self._acting_index is not None or self.has_pending_automatic_progress():
+            return
+        self._acting_index = self._next_action_index_from(self._big_blind_index or 0)
+
+    def _award_last_live_seat(self, events: list[GameEvent]) -> None:
+        live_seats = [seat for seat in self._seats if seat.in_hand and not seat.folded]
+        if len(live_seats) != 1:
+            raise RuntimeError("Cannot award a single remaining seat when the hand is still contested")
+        winner = live_seats[0]
+        payout = sum(seat.committed_this_hand for seat in self._seats)
+        winner.stack += payout
+        events.append(
+            GameEvent(
+                "hand_awarded",
+                {"seat_id": winner.seat_id, "amount": payout, "reason": "everyone_else_folded"},
+            )
+        )
+        events.append(GameEvent("hand_completed", {"hand_number": self._hand_number}))
+        self._phase = GamePhase.HAND_COMPLETE
+        self._acting_index = None
 
     def _run_showdown(self, events: list[GameEvent]) -> None:
         self._phase = GamePhase.SHOWDOWN
@@ -568,11 +630,6 @@ class PokerEngine:
         events.append(GameEvent("hand_completed", {"hand_number": self._hand_number}))
         self._phase = GamePhase.HAND_COMPLETE
         self._acting_index = None
-
-    def _run_board_to_showdown(self, events: list[GameEvent]) -> None:
-        while self._phase != GamePhase.RIVER:
-            self._advance_street(events)
-        self._run_showdown(events)
 
     def _calculate_showdown_payouts(self) -> dict[str, int]:
         active = {
@@ -831,8 +888,8 @@ class PokerEngine:
             street_contribution=seat.committed_this_street,
         )
 
-    def _replay_seat_state(self, seat: _SeatState) -> ReplaySeatState:
-        return ReplaySeatState(
+    def _hand_seat_state(self, seat: _SeatState) -> HandSeatState:
+        return HandSeatState(
             seat_id=seat.seat_id,
             name=seat.name,
             stack=seat.stack,

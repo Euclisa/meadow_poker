@@ -315,6 +315,82 @@ def test_invalid_action_matrix_returns_specific_codes_without_mutation() -> None
     assert before == after
 
 
+def test_start_next_hand_without_auto_resolve_preserves_normal_turn_when_no_auto_step_is_pending() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Qd", "Ad", "Ks", "Qc", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(2_000, 2_000, 2_000),
+    )
+
+    result = engine.start_next_hand(auto_resolve=False)
+
+    assert result.ok is True
+    assert engine.has_pending_automatic_progress() is False
+    assert engine.get_acting_seat() == "p1"
+    assert {item.action_type for item in engine.get_legal_actions("p1")} == {
+        ActionType.FOLD,
+        ActionType.CALL,
+        ActionType.RAISE,
+    }
+
+
+def test_manual_automatic_progress_hides_turn_until_street_transition_is_resolved() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(2_000, 2_000),
+    )
+    engine.start_next_hand(auto_resolve=False)
+
+    assert engine.apply_action("p1", PlayerAction(ActionType.CALL), auto_resolve=False).ok is True
+    result = engine.apply_action("p2", PlayerAction(ActionType.CHECK), auto_resolve=False)
+
+    assert result.ok is True
+    assert engine.has_pending_automatic_progress() is True
+    assert engine.get_acting_seat() is None
+    assert engine.get_legal_actions("p2") == ()
+
+    blocked = engine.apply_action("p2", PlayerAction(ActionType.CHECK), auto_resolve=False)
+    assert blocked.ok is False
+    assert blocked.error is not None
+    assert blocked.error.code == "automatic_progress_pending"
+
+    progress = engine.resolve_automatic_step()
+
+    assert progress.advanced is True
+    assert [event.event_type for event in progress.events] == ["street_started"]
+    assert engine.get_phase() == GamePhase.FLOP
+    assert engine.has_pending_automatic_progress() is False
+    assert engine.get_acting_seat() == "p2"
+
+
+def test_manual_automatic_progress_steps_all_in_runout_one_transition_at_a_time() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(500, 500),
+    )
+    engine.start_next_hand(auto_resolve=False)
+
+    assert engine.apply_action("p1", PlayerAction(ActionType.RAISE, amount=500), auto_resolve=False).ok is True
+    assert engine.apply_action("p2", PlayerAction(ActionType.CALL), auto_resolve=False).ok is True
+
+    assert engine.has_pending_automatic_progress() is True
+
+    first = engine.resolve_automatic_step()
+    second = engine.resolve_automatic_step()
+    third = engine.resolve_automatic_step()
+    fourth = engine.resolve_automatic_step()
+
+    assert first.advanced is True
+    assert [event.payload.get("phase") for event in first.events if event.event_type == "street_started"] == ["flop"]
+    assert second.advanced is True
+    assert [event.payload.get("phase") for event in second.events if event.event_type == "street_started"] == ["turn"]
+    assert third.advanced is True
+    assert [event.payload.get("phase") for event in third.events if event.event_type == "street_started"] == ["river"]
+    assert fourth.advanced is True
+    assert any(event.event_type == "showdown_started" for event in fourth.events)
+    assert engine.is_hand_complete() is True
+    assert engine.resolve_automatic_step().advanced is False
+
+
 # ---------------------------------------------------------------------------
 # Edge case: hand evaluation
 # ---------------------------------------------------------------------------

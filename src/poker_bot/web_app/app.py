@@ -13,7 +13,7 @@ from poker_bot.naming import BotNameAllocator
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
 from poker_bot.poker.engine import PokerEngine
-from poker_bot.replay import HandReplayBuildError, HandReplaySession, build_hand_replay_record
+from poker_bot.replay import HandReplayBuildError, HandReplaySession
 from poker_bot.table_runner import run_table
 from poker_bot.types import ActionType, PlayerAction, PlayerUpdate, PlayerUpdateType, SeatConfig, TableConfig, TelegramTableState
 from poker_bot.web_app.player import WebPlayerAgent
@@ -381,17 +381,13 @@ class WebApp:
         if hand_number is None:
             return self._error_response("Invalid hand number.", status=400)
 
-        record = session.find_completed_hand(hand_number)
-        if record is None:
+        archive = session.find_completed_hand_archive(hand_number)
+        if archive is None:
             return self._error_response("Completed hand not found.", status=404)
         try:
-            replay_record = session.replay_records.get(hand_number)
-            if replay_record is None:
-                replay_record = build_hand_replay_record(record)
-                session.replay_records[hand_number] = replay_record
             viewer = session.find_reservation_by_token(authorized_token)
             replay_session = HandReplaySession(
-                replay_record,
+                archive.trace,
                 viewer_seat_id=viewer.seat_id if viewer is not None else None,
             )
             frame = replay_session.materialize(step_index)
@@ -403,7 +399,7 @@ class WebApp:
         return self._json_response(
             serialize_replay_snapshot(
                 session,
-                replay_record,
+                archive,
                 frame,
                 seat_token=authorized_token,
             )

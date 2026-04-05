@@ -7,7 +7,7 @@ from poker_bot.types import (
     DecisionRequest,
     GameEvent,
     GamePhase,
-    HandReplayRecord,
+    HandArchive,
     PlayerView,
     PublicTableView,
     ReplayFrame,
@@ -115,7 +115,7 @@ def serialize_table_snapshot(
 
 def serialize_replay_snapshot(
     session: WebTableSession,
-    replay_record: HandReplayRecord,
+    archive: HandArchive,
     frame: ReplayFrame,
     *,
     seat_token: str | None,
@@ -133,12 +133,12 @@ def serialize_replay_snapshot(
         "table_id": session.table_id,
         "replay": {
             "active": True,
-            "hand_number": replay_record.hand_number,
+            "hand_number": archive.record.hand_number,
             "current_step": frame.step_index,
             "total_steps": frame.total_steps,
             "can_step_backward": frame.step_index > 0,
             "can_step_forward": frame.step_index < frame.total_steps - 1,
-            "replay_path": f"/table/{session.table_id}/replay/{replay_record.hand_number}",
+            "replay_path": f"/table/{session.table_id}/replay/{archive.record.hand_number}",
         },
         "config_summary": {
             "total_seats": session.total_seats,
@@ -174,7 +174,7 @@ def serialize_replay_snapshot(
             "share_path": f"/table/{session.table_id}",
             "join_disabled_reason": None,
         },
-        "message": f"Replay for hand #{replay_record.hand_number}",
+        "message": f"Replay for hand #{archive.record.hand_number}",
         "showdown": _serialize_replay_showdown(frame),
     }
 
@@ -255,11 +255,11 @@ def _serialize_completed_hands(session: WebTableSession) -> list[dict[str, Any]]
         return []
     return [
         {
-            "hand_number": record.hand_number,
-            "ended_in_showdown": record.ended_in_showdown,
-            "replay_path": f"/table/{session.table_id}/replay/{record.hand_number}",
+            "hand_number": archive.record.hand_number,
+            "ended_in_showdown": archive.record.ended_in_showdown,
+            "replay_path": f"/table/{session.table_id}/replay/{archive.record.hand_number}",
         }
-        for record in reversed(session.orchestrator.completed_hands)
+        for archive in reversed(session.orchestrator.completed_hand_archives)
     ]
 
 

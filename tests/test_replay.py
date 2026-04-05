@@ -9,7 +9,7 @@ from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.players.base import PlayerAgent
 from poker_bot.poker.decks import DeckSequenceFactory, decode_card_order, encode_card_order
 from poker_bot.poker.engine import PokerEngine
-from poker_bot.replay import HandReplayBuildError, HandReplaySession, build_hand_replay_record
+from poker_bot.replay import HandReplayBuildError, HandReplaySession, validate_hand_trace
 from poker_bot.types import ActionType, DecisionRequest, PlayerAction, PlayerUpdate, SeatConfig, TableConfig
 
 
@@ -48,13 +48,12 @@ def test_card_order_codec_round_trip() -> None:
     assert decode_card_order(encoded) == cards
 
 
-def test_engine_can_hydrate_from_replay_seed() -> None:
+def test_engine_can_hydrate_from_hand_state_snapshot() -> None:
     engine = _make_engine(("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"))
     engine.start_next_hand()
-    seed = engine.export_hand_replay_seed()
-    deck_order = engine.export_remaining_deck_order()
+    snapshot = engine.export_hand_state_snapshot()
 
-    replay_engine = PokerEngine.from_hand_replay_seed(seed, deck_order)
+    replay_engine = PokerEngine.from_hand_state_snapshot(snapshot)
 
     assert replay_engine.get_public_table_view() == engine.get_public_table_view()
     assert replay_engine.get_acting_seat() == engine.get_acting_seat()
@@ -62,34 +61,62 @@ def test_engine_can_hydrate_from_replay_seed() -> None:
     assert replay_engine.get_legal_actions("p1") == engine.get_legal_actions("p1")
 
 
-def test_build_hand_replay_record_replays_completed_hand_and_supports_step_back() -> None:
+def test_archived_hand_trace_replays_completed_hand_and_supports_step_back() -> None:
     engine = _make_engine(("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"))
     orchestrator = GameOrchestrator(
         engine,
         {
-            "p1": ScriptedAgent("p1", [PlayerAction(ActionType.CALL), PlayerAction(ActionType.CHECK), PlayerAction(ActionType.CHECK), PlayerAction(ActionType.CHECK)]),
-            "p2": ScriptedAgent("p2", [PlayerAction(ActionType.CHECK), PlayerAction(ActionType.CHECK), PlayerAction(ActionType.CHECK), PlayerAction(ActionType.CHECK)]),
+            "p1": ScriptedAgent(
+                "p1",
+                [
+                    PlayerAction(ActionType.CALL),
+                    PlayerAction(ActionType.CHECK),
+                    PlayerAction(ActionType.CHECK),
+                    PlayerAction(ActionType.CHECK),
+                ],
+            ),
+            "p2": ScriptedAgent(
+                "p2",
+                [
+                    PlayerAction(ActionType.CHECK),
+                    PlayerAction(ActionType.CHECK),
+                    PlayerAction(ActionType.CHECK),
+                    PlayerAction(ActionType.CHECK),
+                ],
+            ),
         },
     )
 
     asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
-    record = orchestrator.completed_hands[0]
-    replay_record = build_hand_replay_record(record)
-    replay_session = HandReplaySession(replay_record, viewer_seat_id="p1")
+    archive = orchestrator.completed_hand_archives[0]
+    validate_hand_trace(archive.trace)
+    replay_session = HandReplaySession(archive.trace, viewer_seat_id="p1")
 
     start_frame = replay_session.materialize(0)
-    final_frame = replay_session.materialize(replay_record.total_steps - 1)
+    final_frame = replay_session.materialize(archive.trace.total_steps - 1)
     previous_frame = replay_session.step_back()
 
-    assert replay_record.total_steps == len(replay_record.actions) + 1
-    assert start_frame.public_table_view == record.start_public_view
-    assert final_frame.public_table_view == record.current_public_view
+    assert archive.trace.total_steps == len(archive.trace.transitions) + 1
+    assert tuple(event.event_type for event in archive.trace.initial_events) == (
+        "hand_started",
+        "blind_posted",
+        "blind_posted",
+        "street_started",
+    )
+    assert start_frame.public_table_view == archive.record.start_public_view
+    assert tuple(event.event_type for event in start_frame.visible_events) == (
+        "hand_started",
+        "blind_posted",
+        "blind_posted",
+        "street_started",
+    )
+    assert final_frame.public_table_view == archive.record.current_public_view
     assert final_frame.player_view is not None
     assert final_frame.player_view.hole_cards == ("As", "Ad")
-    assert previous_frame.step_index == replay_record.total_steps - 2
+    assert previous_frame.step_index == archive.trace.total_steps - 2
 
 
-def test_build_hand_replay_record_fails_loudly_for_inconsistent_hand() -> None:
+def test_archived_hand_trace_records_action_and_automatic_steps_separately() -> None:
     engine = _make_engine(("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"))
     orchestrator = GameOrchestrator(
         engine,
@@ -100,14 +127,39 @@ def test_build_hand_replay_record_fails_loudly_for_inconsistent_hand() -> None:
     )
 
     asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
-    record = orchestrator.completed_hands[0]
-    tampered = replace(
-        record,
-        current_public_view=replace(
-            record.current_public_view,
-            pot_total=999,
+    archive = orchestrator.completed_hand_archives[0]
+    replay_session = HandReplaySession(archive.trace, viewer_seat_id="p1")
+
+    assert [transition.kind for transition in archive.trace.transitions] == ["action", "automatic"]
+
+    action_frame = replay_session.materialize(1)
+    final_frame = replay_session.materialize(2)
+
+    assert action_frame.public_table_view.phase.value == "preflop"
+    assert action_frame.public_table_view.acting_seat_id is None
+    assert final_frame.public_table_view.phase.value == "hand_complete"
+
+
+def test_validate_hand_trace_fails_loudly_for_inconsistent_final_state() -> None:
+    engine = _make_engine(("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"))
+    orchestrator = GameOrchestrator(
+        engine,
+        {
+            "p1": ScriptedAgent("p1", [PlayerAction(ActionType.FOLD)]),
+            "p2": ScriptedAgent("p2", []),
+        },
+    )
+
+    asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
+    archive = orchestrator.completed_hand_archives[0]
+    assert archive.trace.final_state is not None
+    tampered_trace = replace(
+        archive.trace,
+        final_state=replace(
+            archive.trace.final_state,
+            current_bet=999,
         ),
     )
 
     with pytest.raises(HandReplayBuildError):
-        build_hand_replay_record(tampered)
+        validate_hand_trace(tampered_trace)

@@ -168,8 +168,6 @@ class HandRecord:
     start_public_view: PublicTableView
     current_public_view: PublicTableView
     ended_in_showdown: bool
-    replay_seed: "HandReplaySeed | None" = None
-    replay_deck_order: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +189,13 @@ class ActionResult:
 
 
 @dataclass(frozen=True, slots=True)
-class ReplaySeatState:
+class AutomaticProgressResult:
+    advanced: bool
+    events: tuple[GameEvent, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class HandSeatState:
     seat_id: str
     name: str
     stack: int
@@ -207,7 +211,7 @@ class ReplaySeatState:
 
 
 @dataclass(frozen=True, slots=True)
-class HandReplaySeed:
+class HandStateSnapshot:
     hand_number: int
     phase: GamePhase
     board_cards: tuple[str, ...]
@@ -220,24 +224,36 @@ class HandReplaySeed:
     big_blind_seat_id: str | None
     small_blind: int
     big_blind: int
-    seats: tuple[ReplaySeatState, ...]
+    remaining_deck_order: str
+    seats: tuple[HandSeatState, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class ReplayAction:
-    seat_id: str
-    action: PlayerAction
+class HandTransition:
+    kind: str
+    events: tuple[GameEvent, ...]
+    seat_id: str | None = None
+    action: PlayerAction | None = None
 
 
 @dataclass(frozen=True, slots=True)
-class HandReplayRecord:
+class HandTrace:
     hand_number: int
-    seed: HandReplaySeed
-    deck_order: str
-    bootstrap_events: tuple[GameEvent, ...]
-    actions: tuple[ReplayAction, ...]
+    initial_state: HandStateSnapshot
+    initial_events: tuple[GameEvent, ...]
+    transitions: tuple[HandTransition, ...]
+    final_state: HandStateSnapshot | None
     ended_in_showdown: bool
-    total_steps: int
+
+    @property
+    def total_steps(self) -> int:
+        return len(self.transitions) + 1
+
+
+@dataclass(frozen=True, slots=True)
+class HandArchive:
+    record: HandRecord
+    trace: HandTrace
 
 
 @dataclass(frozen=True, slots=True)

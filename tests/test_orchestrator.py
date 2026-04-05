@@ -340,10 +340,20 @@ def test_orchestrator_stores_completed_hands_and_notifies_agents() -> None:
 
     asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
 
+    assert len(orchestrator.completed_hand_archives) == 1
     assert len(orchestrator.completed_hands) == 1
+    archive = orchestrator.completed_hand_archives[0]
     record = orchestrator.completed_hands[0]
+    assert archive.record is record
     assert record.status is HandRecordStatus.COMPLETED
     assert record.hand_number == 1
+    assert tuple(event.event_type for event in archive.trace.initial_events) == (
+        "hand_started",
+        "blind_posted",
+        "blind_posted",
+        "street_started",
+    )
+    assert archive.trace.final_state is not None
 
     assert len(agent_one.completed_hand_records) == 1
     assert len(agent_two.completed_hand_records) == 1
