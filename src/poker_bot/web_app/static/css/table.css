@@ -544,8 +544,12 @@
 .button--coach {
   min-width: 2.8rem;
   padding: 0.58rem 0.8rem;
-  background: linear-gradient(135deg, #f5e7b5, #e7c675);
-  color: #5d4622;
+  background: linear-gradient(135deg, #d4e8d0, #97ba91);
+  color: #2f4838;
+}
+
+.button--coach svg {
+  display: block;
 }
 
 .coach-bubble {
