@@ -274,6 +274,14 @@ function renderToolbar(snapshot, { joinName = "", busy = false, coachPending = f
               value="${escapeHtml(defaultAmount)}"
               min="${rangedAction.min_amount}" max="${rangedAction.max_amount}" step="1"
               placeholder="${escapeHtml(prettyPhaseLabel(rangedAction.action_type))} amt">
+            <div class="bet-presets">
+              ${[["⅓", 1/3], ["½", 1/2], ["¾", 3/4], ["Pot", 1]].map(([label, frac]) => {
+                const raw = Math.round(snapshot.public_table.pot_total * frac);
+                const clamped = Math.min(rangedAction.max_amount, Math.max(rangedAction.min_amount, raw));
+                return `<button class="bet-preset" type="button" data-preset-amount="${clamped}">${label}</button>`;
+              }).join("")}
+              <button class="bet-preset bet-preset--allin" type="button" data-preset-amount="${rangedAction.max_amount}">All-in</button>
+            </div>
           ` : ""}
           <div class="action-dock__buttons">
             ${controls.can_request_coach

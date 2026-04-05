@@ -71,7 +71,7 @@ function render() {
 
 function bindDelegatedEvents() {
   appRoot.addEventListener("click", (event) => {
-    const target = event.target.closest("[id], [data-action-type], .copy-share-button");
+    const target = event.target.closest("[id], [data-action-type], [data-preset-amount], .copy-share-button");
     if (!target) return;
 
     if (target.id === "copy-share-link") {
@@ -89,6 +89,12 @@ function bindDelegatedEvents() {
     if (target.id === "coach-bubble-close") {
       cancelCoachRequest();
       state.coachVisible = false;
+      render();
+      return;
+    }
+
+    if (target.dataset.presetAmount != null) {
+      state.actionAmount = target.dataset.presetAmount;
       render();
       return;
     }
@@ -250,7 +256,7 @@ function resolveSubmittedAmount(actionType) {
   }
 
   const amountInput = document.getElementById("action-amount");
-  const rawValue = amountInput?.value?.trim() ?? state.actionAmount.trim();
+  const rawValue = state.actionAmount.trim() || amountInput?.value?.trim() || "";
   if (rawValue) {
     state.actionAmount = rawValue;
     return Number(rawValue);
