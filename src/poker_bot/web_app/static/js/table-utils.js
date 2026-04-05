@@ -57,6 +57,19 @@ export function seatPositionStyle(displayIndex, seatCount) {
   return `--seat-x:${x.toFixed(2)}%; --seat-y:${y.toFixed(2)}%;`;
 }
 
+/** Returns "left" or "right" — which side of the seat panel the bet chip sits on. */
+export function seatBetSide(displayIndex, seatCount) {
+  if (displayIndex === 0) return "right";
+  if (seatCount === 2) return "left";
+  const arcStart = 205;
+  const arcEnd = 335;
+  const mid = (arcStart + arcEnd) / 2;
+  const slotCount = Math.max(seatCount - 1, 1);
+  const ratio = slotCount === 1 ? 0.5 : (displayIndex - 1) / (slotCount - 1);
+  const angleDeg = arcStart + (arcEnd - arcStart) * ratio;
+  return angleDeg <= mid ? "right" : "left";
+}
+
 export function seatStatusMeta(seat, actingSeatId) {
   if (seat.folded) {
     return { label: "Fold", tone: "fold" };

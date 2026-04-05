@@ -296,6 +296,88 @@
   font-size: 0.78rem;
 }
 
+/* ── Bet Indicator ──────────────────────────────────── */
+
+.table-seat__bet {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 0.28rem;
+  padding: 0.18rem 0.48rem 0.18rem 0.24rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.38);
+  backdrop-filter: blur(6px);
+  white-space: nowrap;
+  z-index: 3;
+  pointer-events: none;
+  animation: bet-pop 200ms ease-out;
+}
+
+.table-seat__bet--right {
+  left: calc(100% + 0.35rem);
+}
+
+.table-seat__bet--left {
+  right: calc(100% + 0.35rem);
+}
+
+.table-seat__bet-amount {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  line-height: 1;
+}
+
+/* CSS-only poker chip icon */
+.chip-icon {
+  position: relative;
+  display: block;
+  width: 0.95rem;
+  height: 0.95rem;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 35% 35%, rgba(255, 255, 255, 0.35), transparent 60%),
+    linear-gradient(135deg, #d4a44a, #b8862d);
+  box-shadow:
+    inset 0 0 0 1.5px rgba(255, 255, 255, 0.45),
+    inset 0 0 0 2.5px rgba(140, 100, 30, 0.5),
+    0 1px 3px rgba(0, 0, 0, 0.3);
+  flex-shrink: 0;
+}
+
+/* Dashed edge pattern */
+.chip-icon::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border-radius: 50%;
+  border: 1.5px dashed rgba(255, 255, 255, 0.5);
+}
+
+/* Center circle */
+.chip-icon::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0.42rem;
+  height: 0.42rem;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.22);
+  border: 0.5px solid rgba(255, 255, 255, 0.35);
+}
+
+@keyframes bet-pop {
+  from { opacity: 0; transform: translateY(-50%) scale(0.7); }
+  to   { opacity: 1; transform: translateY(-50%) scale(1); }
+}
+
+/* ── Toolbar (join form only) ────────────────────────── */
+
 .panel--toolbar,
 .panel--history,
 .panel--waiting {
@@ -307,10 +389,7 @@
 }
 
 .toolbar__summary,
-.toolbar__join,
-.toolbar__actions,
-.toolbar__action-bar,
-.toolbar__buttons {
+.toolbar__join {
   display: flex;
   gap: 0.55rem;
   flex-wrap: wrap;
@@ -330,84 +409,200 @@
   padding: 0.68rem 0.78rem;
 }
 
-.toolbar__field--amount {
-  min-width: 8rem;
-}
-
-.toolbar__message {
-  flex: 1 1 15rem;
-  min-width: 11rem;
-  color: rgba(33, 50, 41, 0.72);
-  line-height: 1.42;
-}
-
-.toolbar__error {
-  display: inline-block;
-  margin-left: 0.45rem;
-  color: #9f3d4b;
-}
-
-.toolbar__buttons {
-  justify-content: flex-end;
-}
-
-.toolbar__buttons--actions {
-  gap: 0.36rem;
-  flex: 1 1 22rem;
-}
-
 .panel--toolbar .button {
   min-height: 2.55rem;
   padding: 0.68rem 1rem;
 }
 
-.panel--history {
-  padding: 0.38rem 0.62rem;
-  align-self: start;
-  overflow: hidden;
+/* ── Action Dock ────────────────────────────────────── */
+
+.action-dock {
+  border: 1px solid var(--edge);
+  border-radius: 22px;
+  background: var(--surface-strong);
+  box-shadow: 0 20px 60px var(--shadow);
+  padding: 0.6rem 0.85rem;
 }
 
-.history-strip {
+.action-dock__stage {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.55rem;
+  min-height: 3rem;
+}
+
+/* Both layers occupy the same grid cell */
+.action-dock__idle,
+.action-dock__live {
+  grid-area: 1 / 1;
+  display: flex;
   align-items: center;
-  min-height: 0;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  transition: opacity 180ms ease, visibility 180ms ease;
+}
+
+/* Idle layer: visible by default */
+.action-dock__idle {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Live layer: hidden by default */
+.action-dock__live {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* When active: swap visibility */
+.action-dock--active .action-dock__idle {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.action-dock--active .action-dock__live {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.action-dock__message {
+  flex: 1 1 10rem;
+  color: rgba(33, 50, 41, 0.58);
+  font-size: 0.88rem;
+}
+
+.action-dock__side {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.action-dock__prompt {
+  flex: 0 0 auto;
+  font-size: 0.88rem;
+  color: rgba(33, 50, 41, 0.72);
+}
+
+.action-dock__prompt strong {
+  color: var(--ink);
+}
+
+.action-dock__error {
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  color: #9f3d4b;
+}
+
+.action-dock__amount {
+  width: 6.5rem;
+  flex: 0 0 auto;
+  border-radius: 14px;
+  border: 1px solid rgba(71, 104, 83, 0.18);
+  background: rgba(255, 255, 255, 0.82);
+  padding: 0.52rem 0.65rem;
+  font: inherit;
+  font-size: 0.88rem;
+  color: var(--ink);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.action-dock__amount:focus {
+  outline: 2px solid rgba(125, 154, 125, 0.32);
+  border-color: rgba(71, 104, 83, 0.36);
+}
+
+.action-dock__buttons {
+  display: flex;
+  gap: 0.38rem;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+}
+
+.action-dock .button {
+  min-height: 2.55rem;
+  padding: 0.58rem 1.1rem;
+  font-size: 0.92rem;
+  box-shadow: 0 6px 16px rgba(33, 50, 41, 0.12);
+}
+
+.button--fold {
+  background: rgba(255, 255, 255, 0.76);
+  color: rgba(33, 50, 41, 0.72);
+  border: 1px solid rgba(71, 104, 83, 0.14);
+}
+
+.button--call {
+  background: var(--button);
+  color: #fdf9f3;
+}
+
+.button--raise {
+  background: linear-gradient(135deg, #c2885c, #a06930);
+  color: #fdf9f3;
+}
+
+/* ── History Strip ──────────────────────────────────── */
+
+.panel--history {
+  padding: 0.42rem 0.65rem;
+  align-self: start;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .history-strip__label {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.16em;
-  color: rgba(33, 50, 41, 0.58);
+  color: rgba(33, 50, 41, 0.48);
+  margin-bottom: 0.22rem;
 }
 
 .history-strip__list {
   display: flex;
   gap: 0.36rem;
   align-items: center;
+  min-width: 0;
   max-width: 100%;
   min-height: 1.9rem;
   overflow-x: auto;
   overflow-y: hidden;
   white-space: nowrap;
-  padding-bottom: 0.05rem;
+  padding-bottom: 0.28rem;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(71, 104, 83, 0.22) transparent;
 }
 
 .history-strip__list::-webkit-scrollbar {
-  height: 8px;
+  height: 4px;
+}
+
+.history-strip__list::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.history-strip__list::-webkit-scrollbar-thumb {
+  background: rgba(71, 104, 83, 0.22);
+  border-radius: 999px;
+}
+
+.history-strip__list::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 104, 83, 0.38);
 }
 
 .history-line {
   display: inline-flex;
   align-items: center;
-  min-height: 1.7rem;
-  padding: 0.28rem 0.52rem;
+  min-height: 1.6rem;
+  padding: 0.24rem 0.48rem;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.62);
-  border: 1px solid rgba(71, 104, 83, 0.09);
-  font-size: 0.74rem;
-  color: rgba(33, 50, 41, 0.74);
+  border: 1px solid rgba(71, 104, 83, 0.07);
+  font-size: 0.72rem;
+  color: rgba(33, 50, 41, 0.7);
+  flex-shrink: 0;
 }
 
 .history-line--action {

@@ -27,29 +27,32 @@
 * {
   box-sizing: border-box;
   scrollbar-width: thin;
-  scrollbar-color: var(--scroll-thumb) var(--scroll-track);
+  scrollbar-color: rgba(71, 104, 83, 0.24) transparent;
 }
 
 *::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 5px;
+  height: 5px;
 }
 
 *::-webkit-scrollbar-track {
-  background: var(--scroll-track);
+  background: transparent;
   border-radius: 999px;
+  margin: 4px;
 }
 
 *::-webkit-scrollbar-thumb {
-  background: linear-gradient(180deg, rgba(125, 154, 125, 0.78), rgba(71, 104, 83, 0.92));
-  border: 2px solid transparent;
+  background: rgba(71, 104, 83, 0.24);
   border-radius: 999px;
-  background-clip: padding-box;
+  transition: background 150ms ease;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(180deg, rgba(125, 154, 125, 0.92), rgba(71, 104, 83, 1));
-  background-clip: padding-box;
+  background: rgba(71, 104, 83, 0.42);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 html,

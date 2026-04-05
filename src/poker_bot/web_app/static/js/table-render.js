@@ -10,6 +10,7 @@ import {
 import {
   compactEventText,
   orderSeatsForDisplay,
+  seatBetSide,
   seatPositionStyle,
   seatStatusMeta,
   shortPositionLabel,
@@ -142,11 +143,19 @@ function renderSeatPanel({ seat, publicTable, playerView, seatCount, displayInde
   const status = seatStatusMeta(seat, publicTable.acting_seat_id);
   const positionLabel = seat.position ? shortPositionLabel(seat.position) : "";
   const positionTitle = seat.position ? prettyPhaseLabel(seat.position) : "";
+  const betSide = seatBetSide(displayIndex, seatCount);
   const cardsMarkup = isViewer
     ? renderCards(playerView.hole_cards)
     : seat.in_hand && !seat.folded
       ? `${renderCard("xx", { hidden: true })}${renderCard("xx", { hidden: true })}`
       : "";
+
+  const betMarkup = seat.contribution > 0
+    ? `<div class="table-seat__bet table-seat__bet--${betSide}">
+        <span class="chip-icon" aria-hidden="true"></span>
+        <span class="table-seat__bet-amount">${formatChips(seat.contribution)}</span>
+      </div>`
+    : "";
 
   return `
     <article
@@ -175,6 +184,7 @@ function renderSeatPanel({ seat, publicTable, playerView, seatCount, displayInde
           }
         </div>
       </div>
+      ${betMarkup}
     </article>
   `;
 }
@@ -184,138 +194,105 @@ function renderToolbar(snapshot, { joinName = "", busy = false, actionAmount = "
   const summary = snapshot.config_summary;
   const pendingDecision = snapshot.pending_decision;
 
-  return `
-    <section class="panel panel--toolbar">
-      <div class="toolbar__summary">
-        <span class="chip">${summary.claimed_web_seats}/${summary.web_seats} web</span>
-        <span class="chip chip--soft">${summary.llm_seats} bots</span>
-        <span class="chip chip--soft">${formatChips(summary.small_blind)} / ${formatChips(summary.big_blind)}</span>
-        <span class="chip chip--soft">Stack ${formatChips(summary.starting_stack)}</span>
-      </div>
-
-      ${
-        controls.can_join
-          ? `
-            <form id="join-seat-form" class="toolbar__join">
-              <label class="field toolbar__field">
-                <span>Display name</span>
-                <input id="join-seat-name" name="display_name" type="text" value="${escapeHtml(joinName)}" maxlength="40" placeholder="Your name" required>
-              </label>
-              <button class="button button--primary" ${busy ? "disabled" : ""} type="submit">Claim seat</button>
-            </form>
-          `
-          : renderToolbarActions(snapshot, pendingDecision, { busy, actionAmount })
-      }
-    </section>
-  `;
-}
-
-function renderToolbarActions(snapshot, pendingDecision, { busy = false, actionAmount = "" } = {}) {
-  const controls = snapshot.controls;
-
-  if (pendingDecision) {
-    return renderActionBar(pendingDecision, { busy, actionAmount });
+  // Join form is a separate state — no need for the dock
+  if (controls.can_join) {
+    return `
+      <section class="panel panel--toolbar">
+        <div class="toolbar__summary">
+          <span class="chip">${summary.claimed_web_seats}/${summary.web_seats} web</span>
+          <span class="chip chip--soft">${summary.llm_seats} bots</span>
+          <span class="chip chip--soft">${formatChips(summary.small_blind)} / ${formatChips(summary.big_blind)}</span>
+          <span class="chip chip--soft">Stack ${formatChips(summary.starting_stack)}</span>
+        </div>
+        <form id="join-seat-form" class="toolbar__join">
+          <label class="field toolbar__field">
+            <span>Display name</span>
+            <input id="join-seat-name" name="display_name" type="text" value="${escapeHtml(joinName)}" maxlength="40" placeholder="Your name" required>
+          </label>
+          <button class="button button--primary" ${busy ? "disabled" : ""} type="submit">Claim seat</button>
+        </form>
+      </section>
+    `;
   }
 
-  return `
-    <div class="toolbar__actions">
-      <div class="toolbar__message">
-        ${
-          controls.is_joined
-            ? "Your action controls will appear here when the turn reaches you."
-            : escapeHtml(controls.join_disabled_reason || "Use your seat token to rejoin this table.")
-        }
-      </div>
-      <div class="toolbar__buttons">
-        ${
-          controls.can_start
-            ? `<button id="start-table-button" class="button button--primary" ${busy ? "disabled" : ""} type="button">Start</button>`
-            : ""
-        }
-        ${
-          controls.can_cancel
-            ? `<button id="cancel-table-button" class="button button--ghost" ${busy ? "disabled" : ""} type="button">Cancel</button>`
-            : ""
-        }
-        ${
-          controls.can_leave
-            ? `<button id="leave-table-button" class="button button--ghost" ${busy ? "disabled" : ""} type="button">Leave</button>`
-            : ""
-        }
-      </div>
-    </div>
-  `;
-}
-
-function renderActionBar(pendingDecision, { busy = false, actionAmount = "" } = {}) {
-  const rangedAction = pendingDecision.legal_actions.find(
-    (action) => action.action_type === "bet" || action.action_type === "raise",
+  // Always render both idle + active layers; crossfade via CSS class
+  const isActing = !!pendingDecision;
+  const rangedAction = pendingDecision?.legal_actions?.find(
+    (a) => a.action_type === "bet" || a.action_type === "raise",
   );
   const defaultAmount =
     actionAmount ||
     (rangedAction && rangedAction.min_amount != null ? String(rangedAction.min_amount) : "");
 
   return `
-    <div class="toolbar__action-bar">
-      <div class="toolbar__message">
-        ${pendingDecision.to_call > 0 ? `Call ${formatChips(pendingDecision.to_call)}` : "Check or make a bet."}
-        ${
-          pendingDecision.validation_error
-            ? `<span class="toolbar__error">${escapeHtml(pendingDecision.validation_error.message)}</span>`
-            : ""
-        }
+    <section class="action-dock${isActing ? " action-dock--active" : ""}">
+      <div class="action-dock__stage">
+        <div class="action-dock__idle">
+          <span class="action-dock__message">
+            ${controls.is_joined
+              ? "Waiting for your turn\u2026"
+              : escapeHtml(controls.join_disabled_reason || "Use your seat token to rejoin.")}
+          </span>
+          <div class="action-dock__side">
+            ${controls.can_start ? `<button id="start-table-button" class="button button--primary" ${busy ? "disabled" : ""} type="button">Start</button>` : ""}
+            ${controls.can_cancel ? `<button id="cancel-table-button" class="button button--ghost" ${busy ? "disabled" : ""} type="button">Cancel</button>` : ""}
+            ${controls.can_leave ? `<button id="leave-table-button" class="button button--ghost" ${busy ? "disabled" : ""} type="button">Leave</button>` : ""}
+          </div>
+        </div>
+
+        <div class="action-dock__live">
+          <span class="action-dock__prompt">
+            ${pendingDecision
+              ? (pendingDecision.to_call > 0
+                  ? `To call <strong>${formatChips(pendingDecision.to_call)}</strong>`
+                  : "Check or bet")
+              : ""}
+          </span>
+          ${pendingDecision?.validation_error
+            ? `<span class="action-dock__error">${escapeHtml(pendingDecision.validation_error.message)}</span>`
+            : ""}
+          ${rangedAction ? `
+            <input class="action-dock__amount" id="action-amount" type="number"
+              value="${escapeHtml(defaultAmount)}"
+              min="${rangedAction.min_amount}" max="${rangedAction.max_amount}" step="1"
+              placeholder="${escapeHtml(prettyPhaseLabel(rangedAction.action_type))} amt">
+          ` : ""}
+          <div class="action-dock__buttons">
+            ${pendingDecision
+              ? pendingDecision.legal_actions.map((action) => `
+                  <button class="button ${action.action_type === "fold" ? "button--fold" : action.action_type === "check" || action.action_type === "call" ? "button--call" : "button--raise"}"
+                    data-action-type="${escapeHtml(action.action_type)}"
+                    type="button" ${busy ? "disabled" : ""}>
+                    ${escapeHtml(prettyPhaseLabel(action.action_type))}${action.action_type === "call" && pendingDecision.to_call > 0 ? ` ${formatChips(pendingDecision.to_call)}` : ""}
+                  </button>
+                `).join("")
+              : ""}
+          </div>
+        </div>
       </div>
-      ${
-        rangedAction
-          ? `
-            <label class="field toolbar__field toolbar__field--amount">
-              <span>${escapeHtml(rangedAction.action_type)} amount</span>
-              <input id="action-amount" type="number" value="${escapeHtml(defaultAmount)}" min="${rangedAction.min_amount}" max="${rangedAction.max_amount}" step="1">
-            </label>
-          `
-          : ""
-      }
-      <div class="toolbar__buttons toolbar__buttons--actions">
-        ${pendingDecision.legal_actions
-          .map(
-            (action) => `
-              <button
-                class="button ${action.action_type === "fold" ? "button--ghost" : "button--primary"}"
-                data-action-type="${escapeHtml(action.action_type)}"
-                type="button"
-                ${busy ? "disabled" : ""}
-              >
-                ${escapeHtml(prettyPhaseLabel(action.action_type))}
-              </button>
-            `,
-          )
-          .join("")}
-      </div>
-    </div>
+    </section>
   `;
 }
 
 function renderHistoryStrip(snapshot) {
-  const events = (snapshot.recent_events ?? []).slice(-8).reverse();
+  const events = (snapshot.recent_events ?? []).slice(-12).reverse();
   return `
     <section class="panel panel--history">
-      <div class="history-strip">
-        <span class="history-strip__label">Recent</span>
-        <div class="history-strip__list">
-          ${
-            events.length === 0
-              ? `<span class="history-line history-line--empty">No recent action yet.</span>`
-              : events
-                  .map(
-                    (event) => `
-                      <span class="history-line history-line--${escapeHtml(event.kind || "state")}">
-                        ${escapeHtml(compactEventText(event.text))}
-                      </span>
-                    `,
-                  )
-                  .join("")
-          }
-        </div>
+      <span class="history-strip__label">Recent</span>
+      <div class="history-strip__list">
+        ${
+          events.length === 0
+            ? `<span class="history-line history-line--empty">No recent action yet.</span>`
+            : events
+                .map(
+                  (event) => `
+                    <span class="history-line history-line--${escapeHtml(event.kind || "state")}">
+                      ${escapeHtml(compactEventText(event.text))}
+                    </span>
+                  `,
+                )
+                .join("")
+        }
       </div>
     </section>
   `;

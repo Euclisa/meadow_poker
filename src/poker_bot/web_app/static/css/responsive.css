@@ -98,17 +98,35 @@
     width: auto;
   }
 
-  .toolbar__buttons {
+  .table-seat__bet,
+  .table-seat__bet--left,
+  .table-seat__bet--right {
+    position: relative;
+    left: auto;
+    right: auto;
+    top: auto;
+    transform: none;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.28);
+    margin-top: 0.18rem;
+  }
+
+  @keyframes bet-pop {
+    from { opacity: 0; transform: scale(0.7); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+
+  .action-dock__buttons {
     justify-content: flex-start;
   }
 
-  .history-strip {
-    grid-template-columns: 1fr;
-    align-items: start;
+  .action-dock__idle,
+  .action-dock__live {
+    flex-wrap: wrap;
   }
 
   .history-strip__list {
-    padding-bottom: 0.12rem;
+    padding-bottom: 0.18rem;
   }
 
   .summary-grid,
@@ -151,12 +169,27 @@
   .table-header-card,
   .board-center__stats,
   .toolbar__summary,
-  .toolbar__join,
-  .toolbar__actions,
-  .toolbar__action-bar,
-  .toolbar__buttons {
+  .toolbar__join {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .action-dock__idle,
+  .action-dock__live {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .action-dock__buttons {
+    justify-content: stretch;
+  }
+
+  .action-dock__buttons .button {
+    flex: 1;
+  }
+
+  .action-dock__amount {
+    width: 100%;
   }
 
   .table-surface {
@@ -167,6 +200,10 @@
 
   .panel--toolbar {
     padding: 0.62rem 0.76rem;
+  }
+
+  .action-dock {
+    padding: 0.55rem 0.65rem;
   }
 
   .panel--history {
