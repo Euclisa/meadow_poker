@@ -42,6 +42,11 @@ class GameSettings:
     log_level: str | None = None
 
 
+class BackendMode(StrEnum):
+    LOCAL = "local"
+    REMOTE = "remote"
+
+
 class LLMProviderSettings(ABC):
     section_name: ClassVar[str]
 
@@ -183,10 +188,20 @@ class WebSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class BackendSettings:
+    mode: BackendMode = BackendMode.LOCAL
+    gateway_url: str | None = None
+    host: str = "127.0.0.1"
+    port: int = 8090
+    showdown_delay_seconds: float = 5.0
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectConfig:
     game: GameSettings = field(default_factory=GameSettings)
     llm: LLMSettings = field(default_factory=LLMSettings)
     coach: CoachSettings = field(default_factory=CoachSettings)
+    backend: BackendSettings = field(default_factory=BackendSettings)
     telegram: TelegramSettings = field(default_factory=TelegramSettings)
     web: WebSettings = field(default_factory=WebSettings)
 
@@ -204,6 +219,7 @@ def load_project_config(path: str | Path = DEFAULT_CONFIG_PATH) -> ProjectConfig
     game_raw = raw.get("game", {})
     llm_raw = raw.get("llm", {})
     coach_raw = raw.get("coach", {})
+    backend_raw = raw.get("backend", {})
     telegram_raw = raw.get("telegram", {})
     web_raw = raw.get("web", {})
     game = GameSettings(
@@ -212,6 +228,13 @@ def load_project_config(path: str | Path = DEFAULT_CONFIG_PATH) -> ProjectConfig
     )
     llm = LLMSettings.from_config(llm_raw)
     coach = CoachSettings.from_config(coach_raw)
+    backend = BackendSettings(
+        mode=BackendMode(str(backend_raw.get("mode", BackendMode.LOCAL.value)).strip().lower()),
+        gateway_url=_optional_str(backend_raw.get("gateway_url")),
+        host=str(backend_raw.get("host", "127.0.0.1")),
+        port=int(backend_raw.get("port", 8090)),
+        showdown_delay_seconds=float(backend_raw.get("showdown_delay_seconds", 5.0)),
+    )
     telegram = TelegramSettings(
         bot_token=telegram_raw.get("bot_token"),
         bot_username=telegram_raw.get("bot_username"),
@@ -224,18 +247,27 @@ def load_project_config(path: str | Path = DEFAULT_CONFIG_PATH) -> ProjectConfig
         showdown_delay_seconds=float(web_raw.get("showdown_delay_seconds", 5.0)),
     )
 
-    _validate_project_config(game=game, telegram=telegram, web=web)
-    return ProjectConfig(game=game, llm=llm, coach=coach, telegram=telegram, web=web)
+    _validate_project_config(game=game, backend=backend, telegram=telegram, web=web)
+    return ProjectConfig(game=game, llm=llm, coach=coach, backend=backend, telegram=telegram, web=web)
 
 
 def _validate_project_config(
     *,
     game: GameSettings,
+    backend: BackendSettings,
     telegram: TelegramSettings,
     web: WebSettings,
 ) -> None:
     if game.max_players < 2:
         raise ValueError("game.max_players must be at least 2")
+    if not backend.host.strip():
+        raise ValueError("backend.host must not be empty")
+    if not 0 < backend.port < 65_536:
+        raise ValueError("backend.port must be between 1 and 65535")
+    if backend.mode is BackendMode.REMOTE and not backend.gateway_url:
+        raise ValueError("backend.gateway_url must be set when backend.mode is remote")
+    if backend.showdown_delay_seconds < 0:
+        raise ValueError("backend.showdown_delay_seconds must be >= 0")
     if not web.host.strip():
         raise ValueError("web.host must not be empty")
     if not 0 < web.port < 65_536:

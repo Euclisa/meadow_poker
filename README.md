@@ -34,10 +34,16 @@ Shared runtime configuration lives in `config/config.toml`. Per-table blinds, an
   - `enabled` turns the feature on.
   - `recent_hand_count` controls how many completed public hand summaries trigger a rolling public table-note update.
   - Transport fields mirror `[llm]`, including provider-specific subsections such as `[coach.openrouter]`.
-- `[telegram]` configures the Telegram bot runtime.
-- `[web]` configures the browser lobby and table runtime.
+- `[backend]` configures the shared table backend that owns waiting tables, running tables, orchestrator state, LLM seats, coach access, and replay history.
+  - `mode = "local"` runs the backend in-process inside the selected app.
+  - `mode = "remote"` makes CLI, Telegram, and web talk to a standalone backend server at `gateway_url`.
+  - `host` and `port` are used by `python3 -m poker_bot backend`.
+  - `showdown_delay_seconds` controls the backend-owned showdown pacing in local mode and for the standalone backend server.
+- `[telegram]` configures the Telegram bot interaction layer.
+- `[web]` configures the browser interaction layer.
   - `host` and `port` control where the HTTP server listens.
   - `max_hands_per_table` is optional and mirrors the Telegram table cap behavior.
+  - `showdown_delay_seconds` is the local web default when it spins up an in-process backend.
 
 LLM seat display names are drawn from [names.txt](/home/canary/Documents/Code/hse/poker_bot/src/poker_bot/data/names.txt) and get a `_bot` suffix, for example `Nova_bot`. Telegram human seats use the Telegram display name passed by the bot runtime.
 
@@ -45,7 +51,7 @@ The committed template is `config/config.toml.example`. The real `config/config.
 
 ## Execution
 
-Run the CLI table:
+Run the CLI table against the configured backend:
 
 ```bash
 PYTHONPATH=src python3 -m poker_bot --config config/config.toml cli --players Alice,bot,Bob --max-hands 1 --big-blind 100 --ante 10 --starting-stack 2000
@@ -67,19 +73,27 @@ PYTHONPATH=src python3 -m poker_bot --config config/config.toml web
 
 Then open `http://127.0.0.1:8080` in your browser, unless you changed `[web].host` or `[web].port`.
 
+Run the standalone backend server:
+
+```bash
+PYTHONPATH=src python3 -m poker_bot --config config/config.toml backend
+```
+
+In `backend.mode = "remote"`, the CLI, Telegram bot, and web app all talk to `backend.gateway_url` instead of creating their own in-process backend.
+
 ## Web UI
 
-The web runtime is a vanilla HTML/CSS/JS frontend served by an `aiohttp` backend. It keeps the existing poker engine and orchestrator intact and adds a browser-specific lobby/session layer.
+The web runtime is a vanilla HTML/CSS/JS frontend served by an `aiohttp` app. It is now a thin browser adapter over the shared backend contract: the backend owns waiting/running/completed tables, orchestrator state, human action mailboxes, LLM seats, coach requests, and replay history.
 
 - Create a table with a display name, total seat count, and LLM seat count.
 - Share the table link or code with other browser players.
-- Rejoin your seat after refresh using a browser-stored seat token.
+- Rejoin your seat after refresh using a browser-stored viewer token.
 - Waiting tables are public in the lobby; running and completed tables require a valid seat token.
 - Running-table leave is intentionally unsupported in v1. Refresh/reconnect is handled by the saved seat token instead.
 
 ## CLI Entry Point
 
-The `cli` entry point now requires the local table layout as explicit command-line arguments.
+The `cli` entry point now requires the local table layout as explicit command-line arguments and submits those choices through the same backend contract used by the web and Telegram apps.
 
 - `--players` is a comma-separated seat list such as `Alice,bot,Bob`.
 - `bot` creates an LLM-controlled seat using the shared `[llm]` section from the config file.
@@ -91,4 +105,4 @@ The `cli` entry point now requires the local table layout as explicit command-li
 - `--ante` defaults to `0`.
 - `--starting-stack` defaults to `20` big blinds.
 
-This keeps `config/config.toml` focused on shared services and shared runtime limits, while the CLI command itself explicitly describes the local table you want to run.
+This keeps `config/config.toml` focused on shared services and backend connectivity, while the CLI command itself explicitly describes the table you want to run.

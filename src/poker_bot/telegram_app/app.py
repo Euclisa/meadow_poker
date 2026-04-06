@@ -2,27 +2,23 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import html
+import json
 import logging
 from typing import Any
 
-from poker_bot.coach import CoachRequestError, TableCoach
+from poker_bot.backend.models import ActorRef, ManagedTableConfig
+from poker_bot.backend.serialization import game_event_from_dict, snapshot_pending_decision, snapshot_player_view, snapshot_public_table_view
+from poker_bot.backend.service import BackendError, LocalBackendClient, LocalTableBackendService
 from poker_bot.config import CoachSettings, LLMSettings
 from poker_bot.naming import BotNameAllocator
-from poker_bot.orchestrator import GameOrchestrator
-from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
-from poker_bot.players.telegram import TelegramPlayerAgent
-from poker_bot.poker.engine import PokerEngine
-from poker_bot.table_runner import run_table
-from poker_bot.telegram_app.registry import TelegramTableRegistry
-from poker_bot.telegram_app.session import TelegramTableSession
-from poker_bot.types import (
-    DecisionRequest,
-    PlayerAction,
-    SeatConfig,
-    TableConfig,
-    TelegramTableCreateRequest,
-    TelegramTableState,
+from poker_bot.players.llm import LLMGameClient
+from poker_bot.players.rendering import (
+    render_telegram_status_panel,
+    render_telegram_turn_prompt,
+    render_telegram_update_messages,
 )
+from poker_bot.types import ActionType, PlayerAction, PlayerUpdate, PlayerUpdateType, TelegramTableState
 
 logger = logging.getLogger(__name__)
 _INVALID_TIMEOUT = object()
@@ -55,26 +51,25 @@ class _CreateTableFlowState:
     turn_timeout_configured: bool = False
 
 
-class TelegramActionRouter:
-    def __init__(self, registry: TelegramTableRegistry) -> None:
-        self._registry = registry
+@dataclass(slots=True)
+class _PendingAmountState:
+    table_id: str
+    viewer_token: str
+    action_type: ActionType
+    snapshot: dict[str, Any]
 
-    async def route_callback(self, *, user_id: int, chat_id: int, data: str) -> bool:
-        logger.debug("Telegram callback ignored after reply-keyboard migration user_id=%s chat_id=%s data=%s", user_id, chat_id, data)
-        return False
 
-    async def route_text(self, *, user_id: int, chat_id: int, text: str) -> bool:
-        logger.debug("Telegram text routed user_id=%s chat_id=%s text=%s", user_id, chat_id, text)
-        session = self._registry.get_user_table(user_id)
-        if session is None or session.status != TelegramTableState.RUNNING:
-            return False
-        for agent in session.player_agents.values():
-            if isinstance(agent, TelegramPlayerAgent) and agent.matches_user(user_id=user_id, chat_id=chat_id):
-                if agent.seat_id in session.coach_pending_seat_ids:
-                    await agent.send_private_message("Coach is still thinking. Please wait for the reply.")
-                    return True
-                return await agent.submit_text_action(user_id=user_id, chat_id=chat_id, text=text)
-        return False
+@dataclass(slots=True)
+class _WatcherState:
+    user_id: int
+    chat_id: int
+    table_id: str
+    viewer_token: str
+    display_name: str
+    last_status_text: str | None = None
+    last_prompt_signature: str | None = None
+    seen_recent_event_ids: set[str] = field(default_factory=set)
+    task: asyncio.Task[Any] | None = None
 
 
 class TelegramApp:
@@ -87,17 +82,19 @@ class TelegramApp:
         coach_client_factory: Any | None = None,
         llm_name_allocator: BotNameAllocator | None = None,
         bot: Any | None = None,
-        registry: TelegramTableRegistry | None = None,
+        backend: Any | None = None,
     ) -> None:
         self.config = config
-        self.registry = registry or TelegramTableRegistry()
         self._bot = bot
         self._send_message_callback = send_message
         self._llm_client_factory = llm_client_factory or self._default_llm_client_factory
         self._coach_client_factory = coach_client_factory or self._default_coach_client_factory
         self._llm_name_allocator = llm_name_allocator
         self._create_flows: dict[int, _CreateTableFlowState] = {}
-        self.action_router = TelegramActionRouter(self.registry)
+        self._pending_amounts: dict[int, _PendingAmountState] = {}
+        self._watchers: dict[tuple[int, str], _WatcherState] = {}
+        self._coach_pending_user_ids: set[int] = set()
+        self.backend = backend or self._build_local_backend()
 
     async def handle_start_command(
         self,
@@ -119,7 +116,7 @@ class TelegramApp:
         await self._send_message(
             chat_id,
             "Welcome to Poker Bot.\nUse /create_table to start a table or /join <table_id> to join one.",
-            self._build_lobby_keyboard(user_id),
+            await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id),
         )
 
     async def handle_help_command(self, *, chat_id: int) -> None:
@@ -138,12 +135,14 @@ class TelegramApp:
                     "/help - show this help",
                 ]
             ),
-            self._build_lobby_keyboard(),
+            await self._build_lobby_keyboard(),
         )
 
     async def handle_create_table_command(self, *, user_id: int, chat_id: int) -> None:
         logger.debug("Handling /create_table user_id=%s chat_id=%s", user_id, chat_id)
-        if self.registry.get_user_table(user_id) is not None:
+        self._sync_local_backend_settings()
+        tables = await self._actor_tables(user_id=user_id, chat_id=chat_id, display_name=str(user_id))
+        if any(item["status"] in {"waiting", "running"} for item in tables["tables"]):
             await self._send_message(chat_id, "You are already assigned to a table.")
             return
         self._create_flows[user_id] = _CreateTableFlowState(chat_id=chat_id)
@@ -163,148 +162,113 @@ class TelegramApp:
     ) -> None:
         logger.debug("Handling /join user_id=%s chat_id=%s table_id=%s", user_id, chat_id, table_id)
         try:
-            session = self.registry.join_table(
-                table_id=table_id,
-                user_id=user_id,
-                chat_id=chat_id,
-                display_name=display_name,
-            )
-        except KeyError:
-            await self._send_message(chat_id, "Table not found.", self._build_lobby_keyboard(user_id))
+            result = await self.backend.join_table(self._actor(user_id, chat_id, display_name), table_id)
+        except BackendError as exc:
+            await self._send_message(chat_id, exc.message, await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
             return
-        except ValueError as exc:
-            await self._send_message(chat_id, str(exc), self._build_lobby_keyboard(user_id))
-            return
-
-        await self._notify_waiting_table(
-            session,
+        snapshot = result["snapshot"]
+        await self._notify_waiting_participants(
+            result.get("participants", snapshot.get("participants", ())),
             self._format_waiting_table_update(
-                session,
-                f"{display_name} joined table {session.table_id}.",
+                snapshot,
+                f"{display_name} joined table {snapshot['table_id']}.",
             ),
-            emphasize_start=session.is_full(),
+            emphasize_start=self._is_waiting_table_full(snapshot),
         )
 
     async def handle_my_table_command(self, *, user_id: int, chat_id: int) -> None:
-        session = self.registry.get_user_table(user_id)
-        if session is None:
+        entry = await self._primary_actor_table(user_id=user_id, chat_id=chat_id, display_name=str(user_id))
+        if entry is None:
             await self._send_message(chat_id, "You are not assigned to any table.")
             return
-        await self._send_message(chat_id, self._format_status(session), self._build_lobby_keyboard(user_id))
+        snapshot = await self.backend.get_table_snapshot(entry["table_id"], entry["viewer_token"])
+        await self._send_message(chat_id, self._format_status(snapshot), await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
 
     async def handle_start_game_command(self, *, user_id: int, chat_id: int) -> None:
         logger.debug("Handling /start_game user_id=%s chat_id=%s", user_id, chat_id)
-        session = self.registry.get_user_table(user_id)
-        if session is None:
-            await self._send_message(chat_id, "You are not assigned to any table.", self._build_lobby_keyboard(user_id))
+        self._sync_local_backend_settings()
+        actor = self._actor(user_id, chat_id, str(user_id))
+        entry = await self._primary_actor_table(user_id=user_id, chat_id=chat_id, display_name=str(user_id))
+        if entry is None:
+            await self._send_message(chat_id, "You are not assigned to any table.", await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
             return
-        if session.creator_user_id != user_id:
-            await self._send_message(chat_id, "Only the creator can start the table.", self._build_lobby_keyboard(user_id))
+        try:
+            result = await self.backend.start_table(actor, entry["table_id"], entry["viewer_token"])
+        except BackendError as exc:
+            await self._send_message(chat_id, exc.message, await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
             return
-        if session.status != TelegramTableState.WAITING:
-            await self._send_message(chat_id, "Only waiting tables can be started.", self._build_lobby_keyboard(user_id))
-            return
-        if not session.is_full():
-            await self._send_message(chat_id, "All Telegram seats must be claimed before starting.", self._build_lobby_keyboard(user_id))
-            return
-
-        await self._start_table(session)
-        await self._notify_waiting_table(
-            session,
-            self._format_started_table_message(session),
-        )
+        snapshot = result["snapshot"]
+        participants = result.get("participants", snapshot.get("participants", ()))
+        await self._notify_waiting_participants(participants, self._format_started_table_message(snapshot))
+        await self._ensure_watchers(snapshot, participants=participants)
 
     async def handle_coach_command(self, *, user_id: int, chat_id: int, question: str) -> None:
-        session = self.registry.get_user_table(user_id)
-        if session is None or session.status != TelegramTableState.RUNNING:
+        entry = await self._running_actor_table(user_id=user_id, chat_id=chat_id, display_name=str(user_id))
+        if entry is None:
             await self._send_message(chat_id, "Coach tips are only available while your table is running.")
-            return
-        if session.coach is None:
-            await self._send_message(chat_id, "Coach is not enabled for this table.")
-            return
-        agent = next(
-            (
-                candidate
-                for candidate in session.player_agents.values()
-                if isinstance(candidate, TelegramPlayerAgent)
-                and candidate.matches_user(user_id=user_id, chat_id=chat_id)
-            ),
-            None,
-        )
-        if agent is None or agent.pending_decision is None:
-            await self._send_message(chat_id, "Coach tips are only available on your turn.")
             return
         if not question.strip():
             await self._send_message(chat_id, "Usage: /coach <question>")
             return
-        if agent.seat_id in session.coach_pending_seat_ids:
+        if user_id in self._coach_pending_user_ids:
             await self._send_message(chat_id, "Coach is already thinking for your seat.")
             return
-        if session.orchestrator is None or session.orchestrator.current_hand_record is None:
-            await self._send_message(chat_id, "Current hand context is unavailable.")
-            return
-
-        session.coach_pending_seat_ids.add(agent.seat_id)
         try:
+            self._coach_pending_user_ids.add(user_id)
             await self._send_message(chat_id, "Coach is thinking...")
-            reply = await session.coach.answer_question(
-                table_id=session.table_id,
-                seat_id=agent.seat_id,
-                decision=agent.pending_decision,
-                current_hand_record=session.orchestrator.current_hand_record,
-                question=question,
-            )
-        except CoachRequestError as exc:
-            await self._send_message(chat_id, str(exc))
+            result = await self.backend.request_coach(entry["table_id"], entry["viewer_token"], question)
+        except BackendError as exc:
+            await self._send_message(chat_id, exc.message)
             return
         finally:
-            session.coach_pending_seat_ids.discard(agent.seat_id)
-        await self._send_message(chat_id, reply)
+            self._coach_pending_user_ids.discard(user_id)
+        await self._send_message(chat_id, result["reply"])
 
     async def handle_leave_table_command(self, *, user_id: int, chat_id: int) -> None:
         logger.debug("Handling /leave_table user_id=%s chat_id=%s", user_id, chat_id)
-        session = self.registry.get_user_table(user_id)
-        if session is None:
-            await self._send_message(chat_id, "You are not assigned to any table.", self._build_lobby_keyboard(user_id))
+        actor = self._actor(user_id, chat_id, str(user_id))
+        entry = await self._primary_actor_table(user_id=user_id, chat_id=chat_id, display_name=str(user_id))
+        if entry is None:
+            await self._send_message(chat_id, "You are not assigned to any table.", await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
             return
-        if session.status == TelegramTableState.RUNNING:
-            await self._send_message(chat_id, "Leaving a running table is not supported in v1.", self._build_lobby_keyboard(user_id))
+        if entry["status"] == TelegramTableState.RUNNING.value:
+            await self._send_message(chat_id, "Leaving a running table is not supported in v1.", await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
             return
-        if session.creator_user_id == user_id:
-            cancelled = self.registry.cancel_table(session.table_id)
-            await self._notify_waiting_table(cancelled, f"Table {cancelled.table_id} was cancelled by the creator.")
+        snapshot = await self.backend.get_table_snapshot(entry["table_id"], entry["viewer_token"])
+        if snapshot["controls"]["is_creator"]:
+            await self.handle_cancel_table_command(user_id=user_id, chat_id=chat_id)
             return
-
-        reservation = next(
-            (u for u in session.claimed_telegram_users if u.user_id == user_id), None
-        )
-        display_name = reservation.display_name if reservation else str(user_id)
-        self.registry.leave_waiting_table(user_id)
-        await self._notify_waiting_table(
-            session,
+        try:
+            result = await self.backend.leave_table(actor, entry["table_id"], entry["viewer_token"])
+        except BackendError as exc:
+            await self._send_message(chat_id, exc.message, await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
+            return
+        await self._send_message(chat_id, f"You left table {entry['table_id']}.", await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
+        await self._notify_waiting_participants(
+            result.get("participants", ()),
             self._format_waiting_table_update(
-                session,
-                f"{display_name} left table {session.table_id}.",
+                result["snapshot"],
+                f"{snapshot['controls']['viewer_name']} left table {entry['table_id']}.",
             ),
         )
 
     async def handle_cancel_table_command(self, *, user_id: int, chat_id: int) -> None:
         logger.debug("Handling /cancel_table user_id=%s chat_id=%s", user_id, chat_id)
-        session = self.registry.get_user_table(user_id)
-        if session is None:
-            await self._send_message(chat_id, "You are not assigned to any table.", self._build_lobby_keyboard(user_id))
+        actor = self._actor(user_id, chat_id, str(user_id))
+        entry = await self._primary_actor_table(user_id=user_id, chat_id=chat_id, display_name=str(user_id))
+        if entry is None:
+            await self._send_message(chat_id, "You are not assigned to any table.", await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
             return
-        if session.creator_user_id != user_id:
-            await self._send_message(chat_id, "Only the creator can cancel the table.", self._build_lobby_keyboard(user_id))
+        try:
+            result = await self.backend.cancel_table(actor, entry["table_id"], entry["viewer_token"])
+        except BackendError as exc:
+            await self._send_message(chat_id, exc.message, await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
             return
-        if session.status != TelegramTableState.WAITING:
-            await self._send_message(chat_id, "Only waiting tables can be cancelled.", self._build_lobby_keyboard(user_id))
-            return
-        cancelled = self.registry.cancel_table(session.table_id)
-        await self._notify_waiting_table(cancelled, f"Table {cancelled.table_id} was cancelled.")
+        await self._notify_waiting_participants(result.get("participants", result["snapshot"].get("participants", ())), f"Table {entry['table_id']} was cancelled.")
 
     async def handle_callback_query(self, *, user_id: int, chat_id: int, data: str) -> bool:
-        return await self.action_router.route_callback(user_id=user_id, chat_id=chat_id, data=data)
+        del user_id, chat_id, data
+        return False
 
     async def handle_text_message(
         self,
@@ -324,7 +288,7 @@ class TelegramApp:
             return
         if user_id in self._create_flows and text.strip().lower() == "cancel":
             self._create_flows.pop(user_id, None)
-            await self._send_message(chat_id, "Table creation cancelled.", self._build_lobby_keyboard(user_id))
+            await self._send_message(chat_id, "Table creation cancelled.", await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
             return
         if user_id in self._create_flows:
             await self._handle_create_flow_step(
@@ -334,12 +298,10 @@ class TelegramApp:
                 text=text,
             )
             return
-
-        consumed = await self.action_router.route_text(user_id=user_id, chat_id=chat_id, text=text)
+        consumed = await self._route_action_text(user_id=user_id, chat_id=chat_id, display_name=display_name, text=text)
         if consumed:
             return
-
-        await self._send_message(chat_id, "Unrecognized input. Use /help for commands.", self._build_lobby_keyboard(user_id))
+        await self._send_message(chat_id, "Unrecognized input. Use /help for commands.", await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
 
     async def run_polling(self) -> None:
         if self.config.bot_token is None:
@@ -432,6 +394,98 @@ class TelegramApp:
 
         await dispatcher.start_polling(bot)
 
+    async def _route_action_text(
+        self,
+        *,
+        user_id: int,
+        chat_id: int,
+        display_name: str,
+        text: str,
+    ) -> bool:
+        if user_id in self._coach_pending_user_ids:
+            await self._send_message(chat_id, "Coach is still thinking. Please wait for the reply.")
+            return True
+        entry = await self._running_actor_table(user_id=user_id, chat_id=chat_id, display_name=display_name)
+        if entry is None:
+            return False
+        snapshot = await self.backend.get_table_snapshot(entry["table_id"], entry["viewer_token"])
+        pending = snapshot.get("pending_decision")
+        if pending is None:
+            return False
+        amount_state = self._pending_amounts.get(user_id)
+        if amount_state is not None:
+            if text.strip().lower() in {"cancel", "back"}:
+                self._pending_amounts.pop(user_id, None)
+                await self._send_message(chat_id, "Amount entry cancelled.", self._build_action_keyboard(snapshot))
+                return True
+            return await self._submit_amount(user_id=user_id, chat_id=chat_id, amount_text=text, state=amount_state)
+        action_name = self._normalize_action_text(text)
+        if action_name is None:
+            return False
+        try:
+            action_type = ActionType(action_name)
+        except ValueError:
+            return False
+        legal_action = next((item for item in pending["legal_actions"] if item["action_type"] == action_type.value), None)
+        if legal_action is None:
+            await self._send_message(chat_id, "That action is not legal right now.", self._build_action_keyboard(snapshot))
+            return True
+        if action_type in {ActionType.BET, ActionType.RAISE}:
+            self._pending_amounts[user_id] = _PendingAmountState(
+                table_id=entry["table_id"],
+                viewer_token=entry["viewer_token"],
+                action_type=action_type,
+                snapshot=snapshot,
+            )
+            await self._send_message(
+                chat_id,
+                f"Enter total amount for {action_type.value} ({legal_action['min_amount']}-{legal_action['max_amount']}).",
+                None,
+            )
+            return True
+        try:
+            await self.backend.submit_action(entry["table_id"], entry["viewer_token"], PlayerAction(action_type=action_type))
+        except BackendError as exc:
+            await self._send_message(chat_id, exc.message)
+        return True
+
+    async def _submit_amount(
+        self,
+        *,
+        user_id: int,
+        chat_id: int,
+        amount_text: str,
+        state: _PendingAmountState,
+    ) -> bool:
+        pending = state.snapshot["pending_decision"]
+        assert pending is not None
+        legal_action = next((item for item in pending["legal_actions"] if item["action_type"] == state.action_type.value), None)
+        if legal_action is None:
+            self._pending_amounts.pop(user_id, None)
+            await self._send_message(chat_id, "That action is no longer legal.", None)
+            return True
+        try:
+            amount = int(amount_text.strip())
+        except ValueError:
+            await self._send_message(chat_id, "Enter a numeric total amount.", None)
+            return True
+        if legal_action["min_amount"] is not None and amount < legal_action["min_amount"]:
+            await self._send_message(chat_id, f"Amount must be at least {legal_action['min_amount']}.", None)
+            return True
+        if legal_action["max_amount"] is not None and amount > legal_action["max_amount"]:
+            await self._send_message(chat_id, f"Amount must be at most {legal_action['max_amount']}.", None)
+            return True
+        self._pending_amounts.pop(user_id, None)
+        try:
+            await self.backend.submit_action(
+                state.table_id,
+                state.viewer_token,
+                PlayerAction(action_type=state.action_type, amount=amount),
+            )
+        except BackendError as exc:
+            await self._send_message(chat_id, exc.message)
+        return True
+
     async def _handle_create_flow_step(
         self,
         *,
@@ -441,254 +495,204 @@ class TelegramApp:
         text: str,
     ) -> None:
         logger.debug("Create flow step user_id=%s chat_id=%s text=%s", user_id, chat_id, text)
+        self._sync_local_backend_settings()
         flow = self._create_flows[user_id]
         if flow.total_seats is None:
             total_seats = self._parse_int(text)
             if total_seats is None or not 2 <= total_seats <= self.config.max_players:
-                await self._send_message(
-                    chat_id,
-                    f"Enter a valid player count between 2 and {self.config.max_players}.",
-                    self._build_create_flow_keyboard(),
-                )
+                await self._send_message(chat_id, f"Enter a valid player count between 2 and {self.config.max_players}.", self._build_create_flow_keyboard())
                 return
             flow.total_seats = total_seats
-            await self._send_message(
-                chat_id,
-                f"Enter number of LLM seats (0-{total_seats - 1}).",
-                self._build_create_flow_keyboard(),
-            )
+            await self._send_message(chat_id, f"Enter number of LLM seats (0-{total_seats - 1}).", self._build_create_flow_keyboard())
             return
-
         if flow.llm_seat_count is None:
             llm_seats = self._parse_int(text)
             assert flow.total_seats is not None
             if llm_seats is None or not 0 <= llm_seats < flow.total_seats:
-                await self._send_message(
-                    chat_id,
-                    f"Enter a valid LLM seat count between 0 and {flow.total_seats - 1}.",
-                    self._build_create_flow_keyboard(),
-                )
+                await self._send_message(chat_id, f"Enter a valid LLM seat count between 0 and {flow.total_seats - 1}.", self._build_create_flow_keyboard())
                 return
             flow.llm_seat_count = llm_seats
-            await self._send_message(
-                chat_id,
-                f"Enter big blind. Type Default for {self.config.big_blind}.",
-                self._build_create_flow_keyboard(),
-            )
+            await self._send_message(chat_id, f"Enter big blind. Type Default for {self.config.big_blind}.", self._build_create_flow_keyboard())
             return
-
         if flow.big_blind is None:
             big_blind = self._parse_int_or_default(text, default=self.config.big_blind)
             if big_blind is None or big_blind <= 0:
-                await self._send_message(
-                    chat_id,
-                    "Enter a valid positive big blind, or type Default.",
-                    self._build_create_flow_keyboard(),
-                )
+                await self._send_message(chat_id, "Enter a valid positive big blind, or type Default.", self._build_create_flow_keyboard())
                 return
             flow.big_blind = big_blind
-            await self._send_message(
-                chat_id,
-                f"Enter small blind. Type Default for {self._default_small_blind(big_blind)}.",
-                self._build_create_flow_keyboard(),
-            )
+            await self._send_message(chat_id, f"Enter small blind. Type Default for {self._default_small_blind(big_blind)}.", self._build_create_flow_keyboard())
             return
-
         if flow.small_blind is None:
             assert flow.big_blind is not None
-            small_blind = self._parse_int_or_default(
-                text,
-                default=self._default_small_blind(flow.big_blind),
-            )
+            small_blind = self._parse_int_or_default(text, default=self._default_small_blind(flow.big_blind))
             if small_blind is None or small_blind <= 0 or small_blind > flow.big_blind:
-                await self._send_message(
-                    chat_id,
-                    f"Enter a valid small blind between 1 and {flow.big_blind}, or type Default.",
-                    self._build_create_flow_keyboard(),
-                )
+                await self._send_message(chat_id, f"Enter a valid small blind between 1 and {flow.big_blind}, or type Default.", self._build_create_flow_keyboard())
                 return
             flow.small_blind = small_blind
-            await self._send_message(
-                chat_id,
-                f"Enter ante per player. Type Off/Default for {self._format_ante(self.config.ante)}.",
-                self._build_create_flow_keyboard(),
-            )
+            await self._send_message(chat_id, f"Enter ante per player. Type Off/Default for {self._format_ante(self.config.ante)}.", self._build_create_flow_keyboard())
             return
-
         if flow.ante is None:
             ante = self._parse_ante(text, default=self.config.ante)
             if ante is None:
-                await self._send_message(
-                    chat_id,
-                    "Enter a valid non-negative ante, or type Off/Default.",
-                    self._build_create_flow_keyboard(),
-                )
+                await self._send_message(chat_id, "Enter a valid non-negative ante, or type Off/Default.", self._build_create_flow_keyboard())
                 return
             flow.ante = ante
-            await self._send_message(
-                chat_id,
-                f"Enter starting stack. Type Default for {self._default_starting_stack(flow.big_blind)}.",
-                self._build_create_flow_keyboard(),
-            )
+            await self._send_message(chat_id, f"Enter starting stack. Type Default for {self._default_starting_stack(flow.big_blind)}.", self._build_create_flow_keyboard())
             return
-
         assert flow.total_seats is not None
         assert flow.llm_seat_count is not None
         assert flow.big_blind is not None
         assert flow.small_blind is not None
         assert flow.ante is not None
         if flow.starting_stack is None:
-            starting_stack = self._parse_int_or_default(
-                text,
-                default=self._default_starting_stack(flow.big_blind),
-            )
+            starting_stack = self._parse_int_or_default(text, default=self._default_starting_stack(flow.big_blind))
             if starting_stack is None or starting_stack <= 0:
-                await self._send_message(
-                    chat_id,
-                    "Enter a valid positive starting stack, or type Default.",
-                    self._build_create_flow_keyboard(),
-                )
+                await self._send_message(chat_id, "Enter a valid positive starting stack, or type Default.", self._build_create_flow_keyboard())
                 return
             flow.starting_stack = starting_stack
-            await self._send_message(
-                chat_id,
-                "Enter turn timer in seconds, or type Off/Default to disable it.",
-                self._build_create_flow_keyboard(),
-            )
+            await self._send_message(chat_id, "Enter turn timer in seconds, or type Off/Default to disable it.", self._build_create_flow_keyboard())
             return
-
         if not flow.turn_timeout_configured:
             parsed_timeout = self._parse_turn_timeout(text)
             if parsed_timeout is _INVALID_TIMEOUT:
-                await self._send_message(
-                    chat_id,
-                    "Enter a positive turn timer in seconds, or type Off/Default.",
-                    self._build_create_flow_keyboard(),
-                )
+                await self._send_message(chat_id, "Enter a positive turn timer in seconds, or type Off/Default.", self._build_create_flow_keyboard())
                 return
             flow.turn_timeout_seconds = parsed_timeout
             flow.turn_timeout_configured = True
-
-        request = TelegramTableCreateRequest(
-            total_seats=flow.total_seats,
-            llm_seat_count=flow.llm_seat_count,
-            small_blind=flow.small_blind,
-            big_blind=flow.big_blind,
-            ante=flow.ante,
-            starting_stack=flow.starting_stack,
-            turn_timeout_seconds=flow.turn_timeout_seconds,
-        )
         try:
-            session = self.registry.create_waiting_table(
-                creator_user_id=user_id,
-                creator_chat_id=chat_id,
-                creator_name=display_name,
-                request=request,
+            result = await self.backend.create_table(
+                self._actor(user_id, chat_id, display_name),
+                ManagedTableConfig(
+                    total_seats=flow.total_seats,
+                    llm_seat_count=flow.llm_seat_count,
+                    small_blind=flow.small_blind,
+                    big_blind=flow.big_blind,
+                    ante=flow.ante,
+                    starting_stack=flow.starting_stack,
+                    turn_timeout_seconds=flow.turn_timeout_seconds,
+                    max_hands_per_table=self.config.max_hands_per_table,
+                    max_players=self.config.max_players,
+                    human_transport="telegram",
+                    human_seat_prefix="tg",
+                ),
             )
-        except ValueError as exc:
-            await self._send_message(chat_id, str(exc), self._build_lobby_keyboard(user_id))
+        except BackendError as exc:
+            await self._send_message(chat_id, exc.message, await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
             return
         finally:
             self._create_flows.pop(user_id, None)
-
         await self._send_message(
             chat_id,
-            self._format_created_table(session),
-            self._build_lobby_keyboard(user_id, emphasize_start=session.is_full()),
+            self._format_created_table(result["snapshot"]),
+            await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id, emphasize_start=self._is_waiting_table_full(result["snapshot"])),
         )
 
-    async def _start_table(self, session: TelegramTableSession) -> None:
-        logger.info(
-            "Starting table %s seats=%s telegram=%s llm=%s",
-            session.table_id,
-            session.total_seats,
-            session.telegram_seat_count,
-            session.llm_seat_count,
-        )
-        seat_configs: list[SeatConfig] = []
-        player_agents: dict[str, Any] = {}
-
-        for index, user in enumerate(session.claimed_telegram_users, start=1):
-            seat_id = f"tg_{index}"
-            seat_configs.append(SeatConfig(seat_id=seat_id, name=user.display_name))
-            player_agents[seat_id] = TelegramPlayerAgent(
-                seat_id=seat_id,
-                user_id=user.user_id,
-                chat_id=user.chat_id,
-                send_message=None if self._bot is not None else self._send_message,
-                bot=self._bot,
+    async def _ensure_watchers(self, snapshot: dict[str, Any], *, participants: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None) -> None:
+        for participant in participants or snapshot.get("participants", ()):
+            if participant.get("transport") != "telegram":
+                continue
+            metadata = participant.get("metadata", {})
+            chat_id = int(metadata.get("chat_id", 0))
+            if chat_id == 0:
+                continue
+            user_id = int(participant["external_id"])
+            key = (user_id, snapshot["table_id"])
+            if key in self._watchers and self._watchers[key].task is not None:
+                continue
+            actor = ActorRef(
+                transport="telegram",
+                external_id=str(user_id),
+                display_name=participant["display_name"],
+                metadata={"chat_id": chat_id, "user_id": user_id},
             )
-
-        for index in range(1, session.llm_seat_count + 1):
-            seat_id = f"llm_{index}"
-            seat_configs.append(SeatConfig(seat_id=seat_id, name=self._allocate_llm_name()))
-            player_agents[seat_id] = LLMPlayerAgent(
-                seat_id=seat_id,
-                client=self._llm_client_factory(),
-                recent_hand_count=self.config.llm.recent_hand_count,
-                thought_logging=self.config.llm.thought_logging,
+            tables = await self.backend.get_actor_tables(actor)
+            entry = next((item for item in tables["tables"] if item["table_id"] == snapshot["table_id"]), None)
+            if entry is None:
+                continue
+            state = _WatcherState(
+                user_id=user_id,
+                chat_id=chat_id,
+                table_id=snapshot["table_id"],
+                viewer_token=entry["viewer_token"],
+                display_name=participant["display_name"],
             )
+            state.task = asyncio.create_task(self._watch_table(state))
+            self._watchers[key] = state
 
-        async def handle_turn_timeout(decision: DecisionRequest, action: PlayerAction) -> None:
-            agent = player_agents.get(decision.acting_seat_id)
-            if not isinstance(agent, TelegramPlayerAgent):
-                return
-            await agent.send_private_message(
-                f"Time expired. Auto-{self._format_action_label(action)}."
-            )
-
-        engine = PokerEngine.create_table(
-            TableConfig(
-                small_blind=session.request.small_blind,
-                big_blind=session.request.big_blind,
-                ante=session.request.ante,
-                starting_stack=session.request.starting_stack,
-            ),
-            seat_configs,
-        )
-        orchestrator = GameOrchestrator(
-            engine,
-            player_agents,
-            turn_timeout_seconds=session.request.turn_timeout_seconds,
-            on_turn_timeout=handle_turn_timeout,
-        )
-        session.engine = engine
-        session.player_agents = player_agents
-        session.orchestrator = orchestrator
-        session.coach = self._build_table_coach()
-        self.registry.mark_running(session)
-        session.orchestrator_task = asyncio.create_task(self._run_session(session))
-
-    async def _run_session(self, session: TelegramTableSession) -> None:
-        assert session.orchestrator is not None
-        async def after_hand(result: Any) -> None:
-            if result.completed_hand is not None and session.coach is not None:
-                await session.coach.record_completed_hand(result.completed_hand)
-
+    async def _watch_table(self, state: _WatcherState) -> None:
         try:
-            await run_table(
-                session.orchestrator,
-                max_hands=self.config.max_hands_per_table,
-                close_agents=True,
-                after_hand=after_hand,
-            )
-        finally:
-            logger.info("Table %s completed", session.table_id)
-            self.registry.mark_completed(session)
-            await self._notify_waiting_table(session, f"Table {session.table_id} has completed.")
+            initial = await self.backend.get_table_snapshot(state.table_id, state.viewer_token)
+            await self._emit_watcher_messages(state, initial, new_events=[])
+            version = int(initial.get("version", 0))
+            while True:
+                payload = await self.backend.wait_for_table_version(state.table_id, state.viewer_token, version, 15_000)
+                snapshot = payload["snapshot"]
+                version = int(snapshot.get("version", version))
+                await self._emit_watcher_messages(state, snapshot, new_events=payload.get("new_events", []))
+                if snapshot["status"] in {TelegramTableState.COMPLETED.value, TelegramTableState.CANCELLED.value}:
+                    return
+        except BackendError:
+            return
 
-    async def _notify_waiting_table(
+    async def _emit_watcher_messages(self, state: _WatcherState, snapshot: dict[str, Any], *, new_events: list[dict[str, Any]]) -> None:
+        player_view_payload = snapshot.get("player_view")
+        public_table_payload = snapshot.get("public_table")
+        if player_view_payload is not None and public_table_payload is not None:
+            player_view = snapshot_player_view(player_view_payload, public_table_payload)
+            status_text = render_telegram_status_panel(player_view)
+            if status_text != state.last_status_text:
+                state.last_status_text = status_text
+                await self._send_message(state.chat_id, status_text)
+        for item in snapshot.get("recent_events", []):
+            event_id = item["id"]
+            if event_id in state.seen_recent_event_ids:
+                continue
+            state.seen_recent_event_ids.add(event_id)
+            if event_id.startswith("activity-"):
+                await self._send_message(state.chat_id, html.unescape(str(item["text"])))
+        if new_events and player_view_payload is not None and public_table_payload is not None:
+            update = PlayerUpdate(
+                update_type=self._infer_update_type(new_events, snapshot),
+                events=tuple(game_event_from_dict(item) for item in new_events),
+                public_table_view=snapshot_public_table_view(public_table_payload),
+                player_view=snapshot_player_view(player_view_payload, public_table_payload),
+                acting_seat_id=public_table_payload.get("acting_seat_id"),
+                is_your_turn=snapshot.get("pending_decision") is not None,
+            )
+            for message in render_telegram_update_messages(update):
+                await self._send_message(state.chat_id, message)
+        pending_payload = snapshot.get("pending_decision")
+        if pending_payload is None:
+            state.last_prompt_signature = None
+            return
+        signature = json.dumps(pending_payload, sort_keys=True)
+        if signature == state.last_prompt_signature:
+            return
+        state.last_prompt_signature = signature
+        decision = snapshot_pending_decision(pending_payload, snapshot)
+        await self._send_message(state.chat_id, render_telegram_turn_prompt(decision), self._build_action_keyboard(snapshot))
+
+    async def _notify_waiting_participants(
         self,
-        session: TelegramTableSession,
+        participants: list[dict[str, Any]] | tuple[dict[str, Any], ...],
         text: str,
         *,
         emphasize_start: bool = False,
     ) -> None:
-        for user in session.human_users():
+        for participant in participants:
+            if participant.get("transport") != "telegram":
+                continue
+            chat_id = int(participant.get("metadata", {}).get("chat_id", 0))
+            if chat_id <= 0:
+                continue
             await self._send_message(
-                user.chat_id,
+                chat_id,
                 text,
-                self._build_lobby_keyboard(user.user_id, emphasize_start=emphasize_start),
+                await self._build_lobby_keyboard(
+                    user_id=int(participant["external_id"]),
+                    chat_id=chat_id,
+                    emphasize_start=emphasize_start and participant.get("is_creator", False),
+                ),
             )
 
     async def _send_message(self, chat_id: int, text: str, reply_markup: Any | None = None) -> None:
@@ -697,92 +701,147 @@ class TelegramApp:
             return
         if self._bot is None:
             raise RuntimeError("TelegramApp requires either a send_message callback or an aiogram bot")
-        await self._bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+        await self._bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup, parse_mode="HTML")
+
+    async def _actor_tables(self, *, user_id: int, chat_id: int, display_name: str) -> dict[str, Any]:
+        return await self.backend.get_actor_tables(self._actor(user_id, chat_id, display_name))
+
+    async def _primary_actor_table(self, *, user_id: int, chat_id: int, display_name: str) -> dict[str, Any] | None:
+        tables = await self._actor_tables(user_id=user_id, chat_id=chat_id, display_name=display_name)
+        preferred = next((item for item in tables["tables"] if item["status"] in {"waiting", "running"}), None)
+        if preferred is not None:
+            return preferred
+        return tables["tables"][0] if tables["tables"] else None
+
+    async def _running_actor_table(self, *, user_id: int, chat_id: int, display_name: str) -> dict[str, Any] | None:
+        tables = await self._actor_tables(user_id=user_id, chat_id=chat_id, display_name=display_name)
+        return next((item for item in tables["tables"] if item["status"] == "running"), None)
+
+    def _actor(self, user_id: int, chat_id: int, display_name: str) -> ActorRef:
+        return ActorRef(
+            transport="telegram",
+            external_id=str(user_id),
+            display_name=display_name,
+            metadata={"chat_id": chat_id, "user_id": user_id},
+        )
+
+    def _build_local_backend(self) -> LocalBackendClient:
+        service = LocalTableBackendService(
+            llm_client_factory=self._llm_client_factory,
+            coach_client_factory=self._coach_client_factory,
+            llm_name_allocator=self._llm_name_allocator,
+            llm_recent_hand_count=self.config.llm.recent_hand_count,
+            llm_thought_logging=self.config.llm.thought_logging,
+            coach_enabled=self.config.coach.enabled,
+            coach_recent_hand_count=self.config.coach.recent_hand_count,
+        )
+        return LocalBackendClient(service)
+
+    def _sync_local_backend_settings(self) -> None:
+        if not isinstance(self.backend, LocalBackendClient):
+            return
+        self.backend._service._llm_recent_hand_count = self.config.llm.recent_hand_count
+        self.backend._service._llm_thought_logging = self.config.llm.thought_logging
+        self.backend._service._coach_enabled = self.config.coach.enabled
+        self.backend._service._coach_recent_hand_count = self.config.coach.recent_hand_count
 
     def _default_llm_client_factory(self) -> LLMGameClient:
         if self.config.llm.model is None or self.config.llm.api_key is None:
             raise RuntimeError("LLM model and API key are required to create LLM seats")
-        return LLMGameClient(
-            settings=self.config.llm,
-        )
+        return LLMGameClient(settings=self.config.llm)
 
     def _default_coach_client_factory(self) -> LLMGameClient:
         if self.config.coach.model is None or self.config.coach.api_key is None:
             raise RuntimeError("Coach model and API key are required when coach is enabled")
         return LLMGameClient(settings=self.config.coach)
 
-    def _build_table_coach(self) -> TableCoach | None:
-        if not self.config.coach.enabled:
-            return None
-        return TableCoach(
-            self._coach_client_factory(),
-            recent_hand_count=self.config.coach.recent_hand_count,
-        )
-
-    def _allocate_llm_name(self) -> str:
-        if self._llm_name_allocator is None:
-            self._llm_name_allocator = BotNameAllocator()
-        return self._llm_name_allocator.allocate()
-
-    def _format_created_table(self, session: TelegramTableSession) -> str:
+    def _format_created_table(self, snapshot: dict[str, Any]) -> str:
+        summary = snapshot["config_summary"]
         lines = [
-            f"Created table {session.table_id}.",
-            f"Total seats: {session.total_seats}",
-            f"Telegram seats: {session.telegram_seat_count}",
-            f"LLM seats: {session.llm_seat_count}",
-            f"Blinds: {session.request.small_blind}/{session.request.big_blind}",
-            f"Ante: {self._format_ante(session.request.ante)}",
-            f"Starting stack: {session.request.starting_stack}",
-            f"Turn timer: {self._format_turn_timeout(session.request.turn_timeout_seconds)}",
+            f"Created table {snapshot['table_id']}.",
+            f"Total seats: {summary['total_seats']}",
+            f"Telegram seats: {summary.get('telegram_seats_total', summary['human_seats'])}",
+            f"LLM seats: {summary['llm_seats']}",
+            f"Blinds: {summary['small_blind']}/{summary['big_blind']}",
+            f"Ante: {self._format_ante(summary['ante'])}",
+            f"Starting stack: {summary['starting_stack']}",
+            f"Turn timer: {self._format_turn_timeout(summary['turn_timeout_seconds'])}",
         ]
-        if session.has_multiple_human_players:
-            lines.append(f"Join with: /join {session.table_id}")
-        if session.has_multiple_human_players and self.config.bot_username:
-            lines.append(f"Deep link: https://t.me/{self.config.bot_username}?start=join_{session.table_id}")
-        if session.is_full():
-            lines.append(self._format_ready_to_start_hint(session))
+        if self._has_multiple_human_players(snapshot):
+            lines.append(f"Join with: /join {snapshot['table_id']}")
+        if self._has_multiple_human_players(snapshot) and self.config.bot_username:
+            lines.append(f"Deep link: https://t.me/{self.config.bot_username}?start=join_{snapshot['table_id']}")
+        if self._is_waiting_table_full(snapshot):
+            lines.append(self._format_ready_to_start_hint(snapshot))
         return "\n".join(lines)
 
-    def _format_waiting_table_update(self, session: TelegramTableSession, headline: str) -> str:
+    def _format_waiting_table_update(self, snapshot: dict[str, Any], headline: str) -> str:
+        summary = snapshot["config_summary"]
+        total = summary.get("telegram_seats_total", summary["human_seats"])
+        claimed = summary.get("telegram_seats_claimed", summary["claimed_human_seats"])
         lines = [
             headline,
-            f"Telegram seats: {session.human_player_count}/{session.telegram_seat_count}.",
-            f"Blinds: {session.request.small_blind}/{session.request.big_blind}.",
-            f"Ante: {self._format_ante(session.request.ante)}.",
-            f"Starting stack: {session.request.starting_stack}.",
-            f"Turn timer: {self._format_turn_timeout(session.request.turn_timeout_seconds)}.",
+            f"Telegram seats: {claimed}/{total}.",
+            f"Blinds: {summary['small_blind']}/{summary['big_blind']}.",
+            f"Ante: {self._format_ante(summary['ante'])}.",
+            f"Starting stack: {summary['starting_stack']}.",
+            f"Turn timer: {self._format_turn_timeout(summary['turn_timeout_seconds'])}.",
         ]
-        if session.is_full():
-            lines.append(self._format_ready_to_start_hint(session))
+        if self._is_waiting_table_full(snapshot):
+            lines.append(self._format_ready_to_start_hint(snapshot))
         return "\n".join(lines)
 
-    def _format_ready_to_start_hint(self, session: TelegramTableSession) -> str:
-        if session.has_multiple_human_players:
-            return f"Table {session.table_id} is ready to start. The creator can press Start Game."
-        return f"Table {session.table_id} is ready to start. Press Start Game to begin."
+    def _format_ready_to_start_hint(self, snapshot: dict[str, Any]) -> str:
+        if self._has_multiple_human_players(snapshot):
+            return f"Table {snapshot['table_id']} is ready to start. The creator can press Start Game."
+        return f"Table {snapshot['table_id']} is ready to start. Press Start Game to begin."
 
-    def _format_started_table_message(self, session: TelegramTableSession) -> str:
-        if session.has_multiple_human_players:
-            return f"Table {session.table_id} started with {session.total_seats} seats."
-        return f"Table {session.table_id} started with {session.total_seats} seats after the creator pressed Start Game."
+    def _format_started_table_message(self, snapshot: dict[str, Any]) -> str:
+        if self._has_multiple_human_players(snapshot):
+            return f"Table {snapshot['table_id']} started with {snapshot['config_summary']['total_seats']} seats."
+        return f"Table {snapshot['table_id']} started with {snapshot['config_summary']['total_seats']} seats after the creator pressed Start Game."
 
-    def _format_status(self, session: TelegramTableSession) -> str:
-        status = session.status_view()
+    def _format_status(self, snapshot: dict[str, Any]) -> str:
+        summary = snapshot["config_summary"]
+        joined = ", ".join(participant["external_id"] for participant in snapshot.get("participants", ()) if participant.get("transport") == "telegram") or "-"
         return "\n".join(
             [
-                f"Table {status.table_id}",
-                f"Status: {status.status.value}",
-                f"Creator: {status.creator_user_id}",
-                f"Seats: {status.total_seats}",
-                f"Blinds: {status.small_blind}/{status.big_blind}",
-                f"Ante: {self._format_ante(status.ante)}",
-                f"Starting stack: {status.starting_stack}",
-                f"Turn timer: {self._format_turn_timeout(status.turn_timeout_seconds)}",
-                f"Telegram seats: {status.telegram_seats_claimed}/{status.telegram_seats_total}",
-                f"LLM seats: {status.llm_seat_count}",
-                f"Joined users: {', '.join(str(user_id) for user_id in status.joined_user_ids) or '-'}",
+                f"Table {snapshot['table_id']}",
+                f"Status: {snapshot['status']}",
+                f"Seats: {summary['total_seats']}",
+                f"Blinds: {summary['small_blind']}/{summary['big_blind']}",
+                f"Ante: {self._format_ante(summary['ante'])}",
+                f"Starting stack: {summary['starting_stack']}",
+                f"Turn timer: {self._format_turn_timeout(summary['turn_timeout_seconds'])}",
+                f"Telegram seats: {summary.get('telegram_seats_claimed', summary['claimed_human_seats'])}/{summary.get('telegram_seats_total', summary['human_seats'])}",
+                f"LLM seats: {summary['llm_seats']}",
+                f"Joined users: {joined}",
             ]
         )
+
+    def _build_action_keyboard(self, snapshot: dict[str, Any]) -> Any | None:
+        pending = snapshot.get("pending_decision")
+        if pending is None:
+            return None
+        labels = [[item["action_type"].replace("_", " ").title()] for item in pending.get("legal_actions", ())]
+        return self._make_reply_keyboard(labels)
+
+    @staticmethod
+    def _infer_update_type(new_events: list[dict[str, Any]], snapshot: dict[str, Any]) -> PlayerUpdateType:
+        if any(item["event_type"] == "table_completed" for item in new_events):
+            return PlayerUpdateType.TABLE_COMPLETED
+        if snapshot.get("pending_decision") is not None:
+            return PlayerUpdateType.TURN_STARTED
+        return PlayerUpdateType.STATE_CHANGED
+
+    @staticmethod
+    def _has_multiple_human_players(snapshot: dict[str, Any]) -> bool:
+        return int(snapshot["config_summary"].get("telegram_seats_total", snapshot["config_summary"]["human_seats"])) > 1
+
+    @staticmethod
+    def _is_waiting_table_full(snapshot: dict[str, Any]) -> bool:
+        summary = snapshot["config_summary"]
+        return int(summary.get("telegram_seats_claimed", summary["claimed_human_seats"])) >= int(summary.get("telegram_seats_total", summary["human_seats"]))
 
     @staticmethod
     def _parse_int(raw: str) -> int | None:
@@ -834,8 +893,21 @@ class TelegramApp:
         return "Off" if turn_timeout_seconds is None else f"{turn_timeout_seconds}s"
 
     @staticmethod
-    def _format_action_label(action: PlayerAction) -> str:
-        return action.action_type.value if action.amount is None else f"{action.action_type.value} {action.amount}"
+    def _normalize_action_text(text: str) -> str | None:
+        normalized = text.strip().lower()
+        mapping = {
+            "fold": "fold",
+            "f": "fold",
+            "check": "check",
+            "k": "check",
+            "call": "call",
+            "c": "call",
+            "bet": "bet",
+            "b": "bet",
+            "raise": "raise",
+            "r": "raise",
+        }
+        return mapping.get(normalized)
 
     def _match_lobby_command(self, text: str) -> Any | None:
         normalized = text.strip().lower()
@@ -865,21 +937,34 @@ class TelegramApp:
         await self.handle_cancel_table_command(user_id=user_id, chat_id=chat_id)
 
     async def _handle_help_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
+        del user_id, display_name
         await self.handle_help_command(chat_id=chat_id)
 
-    def _build_lobby_keyboard(self, user_id: int | None = None, *, emphasize_start: bool = False) -> Any | None:
-        session = self.registry.get_user_table(user_id) if user_id is not None else None
-        if session is None:
+    async def _build_lobby_keyboard(
+        self,
+        user_id: int | None = None,
+        chat_id: int | None = None,
+        *,
+        emphasize_start: bool = False,
+    ) -> Any | None:
+        entry = None
+        if user_id is not None:
+            tables = await self._actor_tables(
+                user_id=user_id,
+                chat_id=chat_id or 0,
+                display_name=str(user_id),
+            )
+            entry = next((item for item in tables["tables"] if item["status"] in {"waiting", "running"}), None)
+        if entry is None:
             labels = [["Create Table"], ["Help"]]
-        elif session.status == TelegramTableState.WAITING:
-            if session.creator_user_id == user_id:
-                if emphasize_start and session.is_full():
+        elif entry["status"] == TelegramTableState.WAITING.value:
+            if entry.get("is_creator", False):
+                labels = [["My Table"], ["Start Game"], ["Cancel Table"], ["Help"]]
+                if emphasize_start:
                     labels = [["Start Game"], ["My Table"], ["Cancel Table"], ["Help"]]
-                else:
-                    labels = [["My Table"], ["Start Game"], ["Cancel Table"], ["Help"]]
             else:
                 labels = [["My Table"], ["Leave Table"], ["Help"]]
-        elif session.status == TelegramTableState.RUNNING:
+        elif entry["status"] == TelegramTableState.RUNNING.value:
             labels = [["My Table"], ["Leave Table"], ["Help"]]
         else:
             labels = [["Create Table"], ["Help"]]

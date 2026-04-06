@@ -4,169 +4,61 @@ import asyncio
 
 import pytest
 
-from poker_bot.config import GameSettings, LLMSettings, ProjectConfig, TelegramSettings, ThoughtLoggingMode
-from poker_bot.main import run_cli_mode
+from poker_bot.backend.service import LocalBackendClient
+from poker_bot.config import BackendSettings, GameSettings, LLMSettings, ProjectConfig, TelegramSettings, WebSettings
 import poker_bot.main as main_module
+from poker_bot.main import run_cli_mode
 
-
-class RecordingCLIPlayerAgent:
-    def __init__(self, seat_id: str) -> None:
-        self.seat_id = seat_id
-
-
-class RecordingLLMGameClient:
-    def __init__(
-        self,
-        *,
-        settings: LLMSettings,
-    ) -> None:
-        self.settings = settings
-
-
-class RecordingLLMPlayerAgent:
-    def __init__(
-        self,
-        seat_id: str,
-        client: RecordingLLMGameClient,
-        recent_hand_count: int = 5,
-        thought_logging: ThoughtLoggingMode = ThoughtLoggingMode.OFF,
-    ) -> None:
-        self.seat_id = seat_id
-        self.client = client
-        self.recent_hand_count = recent_hand_count
-        self.thought_logging = thought_logging
-
-
-class RecordingOrchestrator:
-    last_instance: RecordingOrchestrator | None = None
-
-    def __init__(self, engine, agents, *, turn_timeout_seconds=None, **_kwargs) -> None:
-        self.engine = engine
-        self.agents = agents
-        self.turn_timeout_seconds = turn_timeout_seconds
-        RecordingOrchestrator.last_instance = self
+from support import make_backend_service
 
 
 def make_config(*, with_llm: bool = True) -> ProjectConfig:
     return ProjectConfig(
         game=GameSettings(),
         llm=LLMSettings(model="gpt-test", api_key="test") if with_llm else LLMSettings(),
+        backend=BackendSettings(),
         telegram=TelegramSettings(),
+        web=WebSettings(),
     )
 
 
-def test_run_cli_mode_assigns_human_names_and_bot_seats(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, object] = {}
-
-    async def fake_run_table(orchestrator, *, max_hands: int, close_agents: bool = True, after_hand=None) -> None:
-        captured["orchestrator"] = orchestrator
-        captured["max_hands"] = max_hands
-        captured["close_agents"] = close_agents
-        captured["after_hand"] = after_hand
-
-    monkeypatch.setattr(main_module, "CLIPlayerAgent", RecordingCLIPlayerAgent)
-    monkeypatch.setattr(main_module, "LLMGameClient", RecordingLLMGameClient)
-    monkeypatch.setattr(main_module, "LLMPlayerAgent", RecordingLLMPlayerAgent)
-    monkeypatch.setattr(main_module, "GameOrchestrator", RecordingOrchestrator)
-    monkeypatch.setattr(main_module, "run_table", fake_run_table)
-
-    asyncio.run(run_cli_mode(make_config(), players_spec="Alice,bot,cli", max_hands=7))
-
-    orchestrator = RecordingOrchestrator.last_instance
-    assert orchestrator is not None
-    table_view = orchestrator.engine.get_public_table_view()
-    seats = table_view.seats
-    assert seats[0].name == "Alice"
-    assert seats[1].name.endswith("_bot")
-    assert seats[2].name == "cli"
-    assert table_view.small_blind == 50
-    assert table_view.big_blind == 100
-    assert isinstance(orchestrator.agents["p1"], RecordingCLIPlayerAgent)
-    assert isinstance(orchestrator.agents["p2"], RecordingLLMPlayerAgent)
-    assert isinstance(orchestrator.agents["p3"], RecordingCLIPlayerAgent)
-    assert orchestrator.agents["p2"].recent_hand_count == 5
-    assert orchestrator.agents["p2"].thought_logging is ThoughtLoggingMode.OFF
-    assert captured["max_hands"] == 7
-    assert captured["close_agents"] is True
-    assert captured["after_hand"] is None
-
-
-def test_run_cli_mode_passes_llm_thought_logging(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_run_table(orchestrator, *, max_hands: int, close_agents: bool = True, after_hand=None) -> None:
-        del orchestrator, max_hands, close_agents, after_hand
-
-    monkeypatch.setattr(main_module, "CLIPlayerAgent", RecordingCLIPlayerAgent)
-    monkeypatch.setattr(main_module, "LLMGameClient", RecordingLLMGameClient)
-    monkeypatch.setattr(main_module, "LLMPlayerAgent", RecordingLLMPlayerAgent)
-    monkeypatch.setattr(main_module, "GameOrchestrator", RecordingOrchestrator)
-    monkeypatch.setattr(main_module, "run_table", fake_run_table)
-
-    config = ProjectConfig(
-        game=GameSettings(),
-        llm=LLMSettings(
-            model="gpt-test",
-            api_key="test",
-            thought_logging=ThoughtLoggingMode.NOTES,
-        ),
-        telegram=TelegramSettings(),
-    )
-
-    asyncio.run(run_cli_mode(config, players_spec="Alice,bot", max_hands=1))
-
-    orchestrator = RecordingOrchestrator.last_instance
-    assert orchestrator is not None
-    assert orchestrator.agents["p2"].thought_logging is ThoughtLoggingMode.NOTES
-    assert orchestrator.agents["p2"].client.settings.thought_logging is ThoughtLoggingMode.NOTES
-
-
-def test_run_cli_mode_accepts_custom_blinds_and_stack(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_run_table(orchestrator, *, max_hands: int, close_agents: bool = True, after_hand=None) -> None:
-        del max_hands, close_agents, after_hand
-        RecordingOrchestrator.last_instance = orchestrator
-
-    monkeypatch.setattr(main_module, "CLIPlayerAgent", RecordingCLIPlayerAgent)
-    monkeypatch.setattr(main_module, "LLMGameClient", RecordingLLMGameClient)
-    monkeypatch.setattr(main_module, "LLMPlayerAgent", RecordingLLMPlayerAgent)
-    monkeypatch.setattr(main_module, "GameOrchestrator", RecordingOrchestrator)
-    monkeypatch.setattr(main_module, "run_table", fake_run_table)
-
-    asyncio.run(
-        run_cli_mode(
-            make_config(),
-            players_spec="Alice,Bob",
-            max_hands=1,
-            big_blind=200,
-            small_blind=100,
-            ante=25,
-            starting_stack=8_000,
+def test_run_cli_mode_supports_all_bot_tables(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    backend = LocalBackendClient(
+        make_backend_service(
+            llm_outputs=['{"action":"fold"}', '{"action":"check"}', '{"action":"check"}'],
         )
     )
+    monkeypatch.setattr(main_module, "_build_backend_client", lambda config, showdown_delay_seconds=None: backend)
 
-    orchestrator = RecordingOrchestrator.last_instance
-    assert orchestrator is not None
-    table_view = orchestrator.engine.get_public_table_view()
-    assert table_view.small_blind == 100
-    assert table_view.big_blind == 200
-    assert table_view.ante == 25
-    assert all(seat.stack == 8_000 for seat in table_view.seats)
+    asyncio.run(run_cli_mode(make_config(), players_spec="bot,bot", max_hands=1))
+
+    output = capsys.readouterr().out
+    assert "Hand #1" in output
+    assert "Final standings" in output
 
 
-def test_run_cli_mode_passes_turn_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_run_table(orchestrator, *, max_hands: int, close_agents: bool = True, after_hand=None) -> None:
-        del max_hands, close_agents, after_hand
-        RecordingOrchestrator.last_instance = orchestrator
+def test_run_cli_mode_handles_human_and_bot_backend_flow(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    backend = LocalBackendClient(
+        make_backend_service(
+            llm_outputs=['{"action":"check"}', '{"action":"check"}', '{"action":"check"}'],
+        )
+    )
+    monkeypatch.setattr(main_module, "_build_backend_client", lambda config, showdown_delay_seconds=None: backend)
 
-    monkeypatch.setattr(main_module, "CLIPlayerAgent", RecordingCLIPlayerAgent)
-    monkeypatch.setattr(main_module, "LLMGameClient", RecordingLLMGameClient)
-    monkeypatch.setattr(main_module, "LLMPlayerAgent", RecordingLLMPlayerAgent)
-    monkeypatch.setattr(main_module, "GameOrchestrator", RecordingOrchestrator)
-    monkeypatch.setattr(main_module, "run_table", fake_run_table)
+    answers = iter(["fold"])
 
-    asyncio.run(run_cli_mode(make_config(), players_spec="Alice,Bob", max_hands=1, turn_timeout=15))
+    async def fake_read_cli_text(prompt: str) -> str:
+        del prompt
+        return next(answers)
 
-    orchestrator = RecordingOrchestrator.last_instance
-    assert orchestrator is not None
-    assert orchestrator.turn_timeout_seconds == 15
+    monkeypatch.setattr(main_module, "_read_cli_text", fake_read_cli_text)
+
+    asyncio.run(run_cli_mode(make_config(), players_spec="Alice,bot", max_hands=1, turn_timeout=15))
+
+    output = capsys.readouterr().out
+    assert "Turn timer: 15s" in output
+    assert "Actions:" in output
+    assert "Final standings" in output
 
 
 def test_run_cli_mode_rejects_duplicate_human_names_case_insensitively() -> None:

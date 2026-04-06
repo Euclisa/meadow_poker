@@ -29,6 +29,14 @@ recent_hand_count = 5
 # Optional. Applied only when coach.base_url points to openrouter.ai.
 # sort = "throughput"
 
+[backend]
+mode = "local"
+# Required when backend.mode = "remote".
+# gateway_url = "http://127.0.0.1:8090"
+host = "127.0.0.1"
+port = 8090
+showdown_delay_seconds = 5.0
+
 [telegram]
 bot_token = "replace-with-telegram-bot-token"
 bot_username = "your_bot_username"

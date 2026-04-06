@@ -5,33 +5,14 @@ import json
 from dataclasses import dataclass, field
 import logging
 from pathlib import Path
+import secrets
 from typing import Any
 
-from poker_bot.coach import CoachRequestError, TableCoach
+from poker_bot.backend.models import ActorRef, ManagedTableConfig
+from poker_bot.backend.service import BackendError, LocalBackendClient, LocalTableBackendService
 from poker_bot.config import CoachSettings, LLMSettings
-from poker_bot.hand_history import render_replay_public_hand_summary
 from poker_bot.naming import BotNameAllocator
-from poker_bot.orchestrator import GameOrchestrator
-from poker_bot.players.llm import LLMGameClient, LLMPlayerAgent
-from poker_bot.poker.engine import PokerEngine
-from poker_bot.replay import (
-    HandReplayBuildError,
-    HandReplaySession,
-    ReplayAnalysisError,
-    build_replay_decision_spot,
-)
-from poker_bot.table_runner import run_table
-from poker_bot.types import ActionType, PlayerAction, PlayerUpdate, PlayerUpdateType, SeatConfig, TableConfig, TelegramTableState
-from poker_bot.web_app.player import WebPlayerAgent
-from poker_bot.web_app.registry import WebTableRegistry
-from poker_bot.web_app.serialization import serialize_lobby, serialize_replay_snapshot, serialize_table_snapshot
-from poker_bot.web_app.session import (
-    WebShowdownReveal,
-    WebShowdownState,
-    WebShowdownWinner,
-    WebTableCreateRequest,
-    WebTableSession,
-)
+from poker_bot.players.llm import LLMGameClient
 
 logger = logging.getLogger(__name__)
 
@@ -67,13 +48,13 @@ class WebApp:
         llm_client_factory: Any | None = None,
         coach_client_factory: Any | None = None,
         llm_name_allocator: BotNameAllocator | None = None,
-        registry: WebTableRegistry | None = None,
+        backend: Any | None = None,
     ) -> None:
         self.config = config
-        self.registry = registry or WebTableRegistry()
         self._llm_client_factory = llm_client_factory or self._default_llm_client_factory
         self._coach_client_factory = coach_client_factory or self._default_coach_client_factory
         self._llm_name_allocator = llm_name_allocator
+        self.backend = backend or self._build_local_backend()
 
     def create_http_app(self) -> Any:
         web = self._require_aiohttp()
@@ -111,6 +92,7 @@ class WebApp:
             await runner.cleanup()
 
     async def handle_lobby_page(self, request: Any) -> Any:
+        del request
         return self._html_response(
             title="Poker Bot Lobby",
             body_attributes='data-page="lobby"',
@@ -119,9 +101,11 @@ class WebApp:
 
     async def handle_table_page(self, request: Any) -> Any:
         table_id = request.match_info["table_id"]
-        session = self.registry.get_table(table_id)
-        if session is None:
-            raise self._require_aiohttp().HTTPNotFound(text="Table not found.")
+        try:
+            await self.backend.get_table_snapshot(table_id, None)
+        except BackendError as exc:
+            if exc.status == 404:
+                raise self._require_aiohttp().HTTPNotFound(text="Table not found.") from exc
         return self._html_response(
             title=f"Table {table_id}",
             body_attributes=f'data-page="table" data-table-id="{table_id}"',
@@ -130,13 +114,14 @@ class WebApp:
 
     async def handle_replay_page(self, request: Any) -> Any:
         table_id = request.match_info["table_id"]
-        hand_number = request.match_info["hand_number"]
-        session = self.registry.get_table(table_id)
-        if session is None:
-            raise self._require_aiohttp().HTTPNotFound(text="Table not found.")
-        parsed_hand_number = self._parse_int(hand_number)
-        if parsed_hand_number is None or session.find_completed_hand(parsed_hand_number) is None:
+        hand_number = self._parse_int(request.match_info["hand_number"])
+        if hand_number is None:
             raise self._require_aiohttp().HTTPNotFound(text="Completed hand not found.")
+        try:
+            await self.backend.get_replay_snapshot(table_id, None, hand_number, 0)
+        except BackendError as exc:
+            if exc.status == 404:
+                raise self._require_aiohttp().HTTPNotFound(text="Completed hand not found.") from exc
         return self._html_response(
             title=f"Replay Hand {hand_number}",
             body_attributes=(
@@ -147,7 +132,8 @@ class WebApp:
         )
 
     async def handle_lobby_state(self, request: Any) -> Any:
-        return self._json_response(self._lobby_snapshot())
+        del request
+        return self._json_response(await self._fetch_lobby_snapshot())
 
     async def handle_lobby_stream(self, request: Any) -> Any:
         return await self._stream_lobby(request)
@@ -176,25 +162,32 @@ class WebApp:
         assert big_blind is not None
         assert stack_depth is not None
         assert ante is not None
-
-        session, reservation = self.registry.create_waiting_table(
-            creator_name=display_name,
-            request=WebTableCreateRequest(
-                total_seats=total_seats,
-                llm_seat_count=llm_seat_count,
-                big_blind=big_blind,
-                stack_depth=stack_depth,
-                ante=ante,
-                turn_timeout_seconds=turn_timeout_seconds,
-            ),
-        )
-        self._sync_waiting_message(session)
-        await self._broadcast_session(session, include_lobby=True)
+        actor = self._make_actor(display_name)
+        try:
+            result = await self.backend.create_table(
+                actor,
+                ManagedTableConfig(
+                    total_seats=total_seats,
+                    llm_seat_count=llm_seat_count,
+                    small_blind=big_blind // 2,
+                    big_blind=big_blind,
+                    ante=ante,
+                    starting_stack=big_blind * stack_depth,
+                    turn_timeout_seconds=turn_timeout_seconds,
+                    max_hands_per_table=self.config.max_hands_per_table,
+                    max_players=self.config.max_players,
+                    human_transport="web",
+                    human_seat_prefix="web",
+                    stack_depth=stack_depth,
+                ),
+            )
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
         return self._json_response(
             {
-                "table_id": session.table_id,
-                "seat_token": reservation.seat_token,
-                "snapshot": self._snapshot(session, seat_token=reservation.seat_token),
+                "table_id": result["table_id"],
+                "seat_token": result["viewer_token"],
+                "snapshot": self._sanitize_snapshot(result["snapshot"]),
             },
             status=201,
         )
@@ -204,22 +197,14 @@ class WebApp:
         display_name = self._normalize_display_name(payload.get("display_name"))
         table_id = request.match_info["table_id"]
         try:
-            session, reservation = self.registry.join_table(
-                table_id=table_id,
-                display_name=display_name,
-            )
-        except KeyError as exc:
-            return self._error_response(str(exc), status=404)
-        except ValueError as exc:
-            return self._error_response(str(exc), status=400)
-
-        self._sync_waiting_message(session)
-        await self._broadcast_session(session, include_lobby=True)
+            result = await self.backend.join_table(self._make_actor(display_name), table_id)
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
         return self._json_response(
             {
-                "table_id": session.table_id,
-                "seat_token": reservation.seat_token,
-                "snapshot": self._snapshot(session, seat_token=reservation.seat_token),
+                "table_id": result["table_id"],
+                "seat_token": result["viewer_token"],
+                "snapshot": self._sanitize_snapshot(result["snapshot"]),
             }
         )
 
@@ -227,72 +212,40 @@ class WebApp:
         payload = await self._read_json(request)
         table_id = request.match_info["table_id"]
         seat_token = self._normalize_token(payload.get("seat_token"))
+        if seat_token is None:
+            return self._error_response("A valid seat token is required.", status=403)
         try:
-            session = self._require_table(table_id)
-            viewer = self._require_reservation(session, seat_token)
-        except KeyError:
-            return self._error_response("Table not found.", status=404)
-        except PermissionError as exc:
-            return self._error_response(str(exc), status=403)
-
-        if not session.is_creator_token(seat_token):
-            return self._error_response("Only the creator can start the table.", status=403)
-        if session.status != TelegramTableState.WAITING:
-            return self._error_response("Only waiting tables can be started.", status=400)
-        if not session.is_full():
-            return self._error_response("All web seats must be claimed before starting.", status=400)
-
-        await self._start_table(session)
-        return self._json_response(
-            {
-                "ok": True,
-                "snapshot": self._snapshot(session, seat_token=viewer.seat_token),
-            }
-        )
+            actor = await self._actor_for_viewer(table_id, seat_token)
+            result = await self.backend.start_table(actor, table_id, seat_token)
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
+        return self._json_response({"ok": True, "snapshot": self._sanitize_snapshot(result["snapshot"])})
 
     async def handle_leave_table(self, request: Any) -> Any:
         payload = await self._read_json(request)
         table_id = request.match_info["table_id"]
         seat_token = self._normalize_token(payload.get("seat_token"))
+        if seat_token is None:
+            return self._error_response("A valid seat token is required.", status=403)
         try:
-            session = self.registry.leave_waiting_table(table_id=table_id, seat_token=seat_token)
-        except KeyError:
-            return self._error_response("Table not found.", status=404)
-        except ValueError as exc:
-            return self._error_response(str(exc), status=400)
-
-        self._sync_waiting_message(session)
-        await self._broadcast_session(session, include_lobby=True)
-        return self._json_response(
-            {
-                "ok": True,
-                "snapshot": self._snapshot(session, seat_token=None),
-            }
-        )
+            actor = await self._actor_for_viewer(table_id, seat_token)
+            result = await self.backend.leave_table(actor, table_id, seat_token)
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
+        return self._json_response({"ok": True, "snapshot": self._sanitize_snapshot(result["snapshot"])})
 
     async def handle_cancel_table(self, request: Any) -> Any:
         payload = await self._read_json(request)
         table_id = request.match_info["table_id"]
         seat_token = self._normalize_token(payload.get("seat_token"))
+        if seat_token is None:
+            return self._error_response("A valid seat token is required.", status=403)
         try:
-            session = self._require_table(table_id)
-        except KeyError:
-            return self._error_response("Table not found.", status=404)
-        if not session.is_creator_token(seat_token):
-            return self._error_response("Only the creator can cancel the table.", status=403)
-        if session.status != TelegramTableState.WAITING:
-            return self._error_response("Only waiting tables can be cancelled.", status=400)
-
-        cancelled = self.registry.cancel_table(table_id)
-        cancelled.status_message = f"Table {cancelled.table_id} was cancelled."
-        cancelled.add_activity(kind="state", text=cancelled.status_message)
-        await self._broadcast_session(cancelled, include_lobby=True)
-        return self._json_response(
-            {
-                "ok": True,
-                "snapshot": self._snapshot(cancelled, seat_token=seat_token),
-            }
-        )
+            actor = await self._actor_for_viewer(table_id, seat_token)
+            result = await self.backend.cancel_table(actor, table_id, seat_token)
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
+        return self._json_response({"ok": True, "snapshot": self._sanitize_snapshot(result["snapshot"])})
 
     async def handle_submit_action(self, request: Any) -> Any:
         payload = await self._read_json(request)
@@ -300,41 +253,26 @@ class WebApp:
         seat_token = self._normalize_token(payload.get("seat_token"))
         action_name = str(payload.get("action_type", "")).strip().lower()
         amount = payload.get("amount")
-
+        if seat_token is None:
+            return self._error_response("A valid seat token is required.", status=403)
         try:
-            session = self._require_table(table_id)
-            viewer = self._require_reservation(session, seat_token)
-        except KeyError:
-            return self._error_response("Table not found.", status=404)
-        except PermissionError as exc:
-            return self._error_response(str(exc), status=403)
+            from poker_bot.types import PlayerAction, ActionType
 
-        if session.status != TelegramTableState.RUNNING:
-            return self._error_response("Actions are only accepted while the table is running.", status=400)
-
-        agent = session.player_agents.get(viewer.seat_id)
-        if not isinstance(agent, WebPlayerAgent):
-            return self._error_response("This seat is not controlled from the web UI.", status=400)
-
-        try:
             action_type = ActionType(action_name)
+            result = await self.backend.submit_action(
+                table_id,
+                seat_token,
+                PlayerAction(action_type=action_type, amount=self._parse_int(amount) if amount is not None else None),
+            )
         except ValueError:
             return self._error_response("Unknown action type.", status=400)
-
-        parsed_amount = self._parse_int(amount) if amount is not None else None
-        error = agent.submit_action(PlayerAction(action_type=action_type, amount=parsed_amount))
-        if error is not None:
-            return self._json_response(
-                {
-                    "ok": False,
-                    "error": {
-                        "code": error.code,
-                        "message": error.message,
-                    },
-                    "snapshot": self._snapshot(session, seat_token=seat_token),
-                },
-                status=400,
-            )
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
+        if not result.get("ok", False):
+            snapshot = result.get("snapshot")
+            if snapshot is not None:
+                result["snapshot"] = self._sanitize_snapshot(snapshot)
+            return self._json_response(result, status=400)
         return self._json_response({"ok": True})
 
     async def handle_request_coach(self, request: Any) -> Any:
@@ -342,87 +280,35 @@ class WebApp:
         table_id = request.match_info["table_id"]
         seat_token = self._normalize_token(payload.get("seat_token"))
         question = str(payload.get("question", "")).strip() or "What should I do in this spot?"
-
+        if seat_token is None:
+            return self._error_response("A valid seat token is required.", status=403)
         try:
-            session = self._require_table(table_id)
-            viewer = self._require_reservation(session, seat_token)
-        except KeyError:
-            return self._error_response("Table not found.", status=404)
-        except PermissionError as exc:
-            return self._error_response(str(exc), status=403)
-
-        if session.status != TelegramTableState.RUNNING:
-            return self._error_response("Coach tips are only available while the table is running.", status=400)
-        if session.coach is None:
-            return self._error_response("Coach is not enabled for this table.", status=400)
-        agent = session.player_agents.get(viewer.seat_id)
-        if not isinstance(agent, WebPlayerAgent) or agent.pending_decision is None:
-            return self._error_response("Coach tips are only available on your turn.", status=400)
-        if session.orchestrator is None or session.orchestrator.current_hand_record is None:
-            return self._error_response("Current hand context is unavailable.", status=400)
-        try:
-            reply = await session.coach.answer_question(
-                table_id=session.table_id,
-                seat_id=viewer.seat_id,
-                decision=agent.pending_decision,
-                current_hand_record=session.orchestrator.current_hand_record,
-                question=question,
-            )
-        except CoachRequestError as exc:
-            return self._error_response(str(exc), status=504)
-        return self._json_response({"ok": True, "reply": reply})
+            result = await self.backend.request_coach(table_id, seat_token, question)
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
+        return self._json_response(result)
 
     async def handle_table_state(self, request: Any) -> Any:
         table_id = request.match_info["table_id"]
         seat_token = self._normalize_token(request.query.get("seat_token"))
         try:
-            session = self._require_table(table_id)
-            authorized_token = self._authorize_view(session, seat_token)
-        except KeyError:
-            return self._error_response("Table not found.", status=404)
-        except PermissionError as exc:
-            return self._error_response(str(exc), status=403)
-
-        return self._json_response(self._snapshot(session, seat_token=authorized_token))
+            snapshot = await self.backend.get_table_snapshot(table_id, seat_token)
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
+        return self._json_response(self._sanitize_snapshot(snapshot))
 
     async def handle_replay_state(self, request: Any) -> Any:
         table_id = request.match_info["table_id"]
         hand_number = self._parse_int(request.match_info["hand_number"])
         seat_token = self._normalize_token(request.query.get("seat_token"))
         step_index = self._parse_int(request.query.get("step")) or 0
-        try:
-            session = self._require_table(table_id)
-            authorized_token = self._authorize_view(session, seat_token)
-        except KeyError:
-            return self._error_response("Table not found.", status=404)
-        except PermissionError as exc:
-            return self._error_response(str(exc), status=403)
         if hand_number is None:
             return self._error_response("Invalid hand number.", status=400)
-
-        archive = session.find_completed_hand_archive(hand_number)
-        if archive is None:
-            return self._error_response("Completed hand not found.", status=404)
         try:
-            viewer = session.find_reservation_by_token(authorized_token)
-            replay_session = HandReplaySession(
-                archive.trace,
-                viewer_seat_id=viewer.seat_id if viewer is not None else None,
-            )
-            frame = replay_session.materialize(step_index)
-        except HandReplayBuildError as exc:
-            logger.warning("Replay build failed table=%s hand=%s error=%s", table_id, hand_number, exc)
-            return self._error_response("Replay could not be built for this hand.", status=500)
-        except IndexError:
-            return self._error_response("Replay step is out of range.", status=400)
-        return self._json_response(
-            serialize_replay_snapshot(
-                session,
-                archive,
-                frame,
-                seat_token=authorized_token,
-            )
-        )
+            snapshot = await self.backend.get_replay_snapshot(table_id, seat_token, hand_number, step_index)
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
+        return self._json_response(self._sanitize_snapshot(snapshot))
 
     async def handle_request_replay_coach(self, request: Any) -> Any:
         payload = await self._read_json(request)
@@ -434,160 +320,22 @@ class WebApp:
             return self._error_response("Invalid hand number.", status=400)
         if step_index is None:
             return self._error_response("Replay step is required.", status=400)
-
+        if seat_token is None:
+            return self._error_response("A valid seat token is required.", status=403)
         try:
-            session = self._require_table(table_id)
-            viewer = self._require_reservation(session, seat_token)
-        except KeyError:
-            return self._error_response("Table not found.", status=404)
-        except PermissionError as exc:
-            return self._error_response(str(exc), status=403)
-
-        if session.coach is None:
-            return self._error_response("Coach is not enabled for this table.", status=400)
-
-        archive = session.find_completed_hand_archive(hand_number)
-        if archive is None:
-            return self._error_response("Completed hand not found.", status=404)
-
-        try:
-            spot = build_replay_decision_spot(
-                archive.trace,
-                step_index=step_index,
-                viewer_seat_id=viewer.seat_id,
-            )
-        except HandReplayBuildError as exc:
-            logger.warning("Replay build failed table=%s hand=%s error=%s", table_id, hand_number, exc)
-            return self._error_response("Replay could not be built for this hand.", status=500)
-        except IndexError:
-            return self._error_response("Replay step is out of range.", status=400)
-        except ReplayAnalysisError as exc:
-            return self._error_response(str(exc), status=400)
-
-        replay_hand_summary = render_replay_public_hand_summary(
-            hand_number=archive.record.hand_number,
-            events=spot.frame.visible_events,
-            start_public_view=archive.record.start_public_view,
-            current_public_view=spot.frame.public_table_view,
-        )
-        try:
-            reply = await session.coach.analyze_replay_spot(
-                table_id=session.table_id,
-                seat_id=viewer.seat_id,
-                decision=spot.decision,
-                replay_hand_summary=replay_hand_summary,
-                next_transition=spot.next_transition,
-                replay_hand_number=archive.record.hand_number,
-            )
-        except CoachRequestError as exc:
-            return self._error_response(str(exc), status=504)
-        return self._json_response({"ok": True, "reply": reply})
+            result = await self.backend.request_replay_coach(table_id, seat_token, hand_number, step_index)
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
+        return self._json_response(result)
 
     async def handle_table_stream(self, request: Any) -> Any:
         table_id = request.match_info["table_id"]
         seat_token = self._normalize_token(request.query.get("seat_token"))
         try:
-            session = self._require_table(table_id)
-            authorized_token = self._authorize_view(session, seat_token)
-        except KeyError:
-            return self._error_response("Table not found.", status=404)
-        except PermissionError as exc:
-            return self._error_response(str(exc), status=403)
-        return await self._stream_session(request, session=session, seat_token=authorized_token)
-
-    async def _start_table(self, session: WebTableSession) -> None:
-        seat_configs: list[SeatConfig] = []
-        player_agents: dict[str, Any] = {}
-
-        async def publish_state() -> None:
-            await self._broadcast_session(session, include_lobby=False)
-
-        async def handle_turn_timeout(decision: Any, action: PlayerAction) -> None:
-            session.add_activity(
-                kind="state",
-                text=(
-                    f"{decision.player_view.player_name} timed out. "
-                    f"Auto-{self._format_action_label(action)}."
-                ),
-            )
-
-        for user in session.claimed_web_users:
-            seat_configs.append(SeatConfig(seat_id=user.seat_id, name=user.display_name))
-            player_agents[user.seat_id] = WebPlayerAgent(
-                seat_id=user.seat_id,
-                publish_state=publish_state,
-                should_publish_update=self._should_publish_web_update,
-            )
-
-        for index in range(1, session.llm_seat_count + 1):
-            seat_id = f"llm_{index}"
-            seat_configs.append(SeatConfig(seat_id=seat_id, name=self._allocate_llm_name()))
-            player_agents[seat_id] = LLMPlayerAgent(
-                seat_id=seat_id,
-                client=self._llm_client_factory(),
-                recent_hand_count=self.config.llm.recent_hand_count,
-                thought_logging=self.config.llm.thought_logging,
-            )
-
-        engine = PokerEngine.create_table(
-            TableConfig(
-                small_blind=session.request.small_blind,
-                big_blind=session.request.big_blind,
-                ante=session.request.ante,
-                starting_stack=session.request.starting_stack,
-                max_players=session.total_seats,
-            ),
-            seat_configs,
-        )
-        orchestrator = GameOrchestrator(
-            engine,
-            player_agents,
-            turn_timeout_seconds=session.request.turn_timeout_seconds,
-            on_turn_state_changed=publish_state,
-            on_turn_timeout=handle_turn_timeout,
-        )
-        session.engine = engine
-        session.player_agents = player_agents
-        session.orchestrator = orchestrator
-        session.coach = self._build_table_coach()
-        self.registry.mark_running(session)
-        session.status_message = f"Table {session.table_id} started with {session.total_seats} seats."
-        session.add_activity(kind="state", text=session.status_message)
-        await self._broadcast_session(session, include_lobby=True)
-        session.orchestrator_task = asyncio.create_task(self._run_session(session))
-
-    async def _run_session(self, session: WebTableSession) -> None:
-        assert session.orchestrator is not None
-
-        async def after_hand(result: Any) -> None:
-            if result.completed_hand is not None and session.coach is not None:
-                await session.coach.record_completed_hand(result.completed_hand)
-            if not result.ended_in_showdown:
-                return
-            session.showdown_state = self._build_showdown_state(result)
-            await self._broadcast_session(session, include_lobby=False)
-            await asyncio.sleep(self.config.showdown_delay_seconds)
-            session.showdown_state = None
-            await self._broadcast_session(session, include_lobby=False)
-
-        try:
-            await run_table(
-                session.orchestrator,
-                max_hands=self.config.max_hands_per_table,
-                close_agents=True,
-                after_hand=after_hand,
-            )
-        finally:
-            logger.info("Web table %s completed", session.table_id)
-            self.registry.mark_completed(session)
-            session.status_message = f"Table {session.table_id} has completed."
-            session.add_activity(kind="state", text=session.status_message)
-            await self._broadcast_session(session, include_lobby=True)
-
-    async def _broadcast_session(self, session: WebTableSession, *, include_lobby: bool) -> None:
-        session.notify_watchers()
-        if include_lobby:
-            self.registry.notify_lobby_watchers()
+            await self.backend.get_table_snapshot(table_id, seat_token)
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
+        return await self._stream_session(request, table_id=table_id, seat_token=seat_token)
 
     async def _stream_lobby(self, request: Any) -> Any:
         web = self._require_aiohttp()
@@ -599,22 +347,23 @@ class WebApp:
             }
         )
         await response.prepare(request)
-        queue = self.registry.subscribe_lobby()
         try:
-            await self._write_sse(response, "snapshot", self._lobby_snapshot())
+            snapshot = await self._fetch_lobby_snapshot()
+            await self._write_sse(response, "snapshot", snapshot)
+            version = snapshot.get("version", 0)
             while True:
-                try:
-                    await asyncio.wait_for(queue.get(), timeout=15.0)
-                except TimeoutError:
+                payload = await self.backend.wait_for_waiting_tables_version(version, 15_000)
+                next_snapshot = payload["snapshot"]
+                next_version = next_snapshot.get("version", version)
+                if next_version == version:
                     await self._write_sse(response, "ping", {"ok": True})
                     continue
-                await self._write_sse(response, "snapshot", self._lobby_snapshot())
+                version = next_version
+                await self._write_sse(response, "snapshot", next_snapshot)
         except (ConnectionError, RuntimeError):
             return response
-        finally:
-            self.registry.unsubscribe_lobby(queue)
 
-    async def _stream_session(self, request: Any, *, session: WebTableSession, seat_token: str | None) -> Any:
+    async def _stream_session(self, request: Any, *, table_id: str, seat_token: str | None) -> Any:
         web = self._require_aiohttp()
         response = web.StreamResponse(
             headers={
@@ -624,32 +373,43 @@ class WebApp:
             }
         )
         await response.prepare(request)
-        queue = session.subscribe()
         try:
-            await self._write_sse(response, "snapshot", self._snapshot(session, seat_token=seat_token))
+            snapshot = await self.backend.get_table_snapshot(table_id, seat_token)
+            sanitized = self._sanitize_snapshot(snapshot)
+            await self._write_sse(response, "snapshot", sanitized)
+            version = int(snapshot.get("version", 0))
             while True:
-                try:
-                    await asyncio.wait_for(queue.get(), timeout=15.0)
-                except TimeoutError:
+                payload = await self.backend.wait_for_table_version(
+                    table_id,
+                    seat_token,
+                    after_version=version,
+                    timeout_ms=15_000,
+                )
+                next_snapshot = payload["snapshot"]
+                next_version = int(next_snapshot.get("version", version))
+                if next_version == version:
                     await self._write_sse(response, "ping", {"ok": True})
                     continue
-                await self._write_sse(response, "snapshot", self._snapshot(session, seat_token=seat_token))
-        except (ConnectionError, RuntimeError):
+                version = next_version
+                await self._write_sse(response, "snapshot", self._sanitize_snapshot(next_snapshot))
+        except (BackendError, ConnectionError, RuntimeError):
             return response
-        finally:
-            session.unsubscribe(queue)
 
     async def _write_sse(self, response: Any, event_name: str, payload: dict[str, Any]) -> None:
         body = f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
         await response.write(body.encode("utf-8"))
 
-    def _lobby_snapshot(self) -> dict[str, Any]:
-        snapshot = serialize_lobby(self.registry)
+    async def _fetch_lobby_snapshot(self) -> dict[str, Any]:
+        snapshot = await self.backend.list_waiting_tables()
+        snapshot["defaults"] = self._lobby_defaults()
+        return snapshot
+
+    def _lobby_defaults(self) -> dict[str, Any]:
         big_blind_presets = self._big_blind_presets()
         stack_depth_presets = self._stack_depth_presets()
         default_big_blind = self._default_big_blind()
         default_stack_depth = self._default_stack_depth(default_big_blind)
-        snapshot["defaults"] = {
+        return {
             "max_players": self.config.max_players,
             "small_blind": default_big_blind // 2,
             "big_blind": default_big_blind,
@@ -662,76 +422,34 @@ class WebApp:
             "ante_presets": list(self._ante_presets()),
             "max_hands_per_table": self.config.max_hands_per_table,
         }
-        return snapshot
 
-    def _snapshot(self, session: WebTableSession, *, seat_token: str | None) -> dict[str, Any]:
-        return serialize_table_snapshot(
-            session,
-            seat_token=seat_token,
-            small_blind=session.request.small_blind,
-            big_blind=session.request.big_blind,
-            ante=session.request.ante,
-            starting_stack=session.request.starting_stack,
-            max_players=session.total_seats,
-            max_hands_per_table=self.config.max_hands_per_table,
+    async def _actor_for_viewer(self, table_id: str, viewer_token: str) -> ActorRef:
+        snapshot = await self.backend.get_table_snapshot(table_id, viewer_token)
+        payload = snapshot.get("viewer_actor")
+        if payload is None:
+            raise BackendError("A valid seat token is required.", status=403)
+        return ActorRef(
+            transport=str(payload["transport"]),
+            external_id=str(payload["external_id"]),
+            display_name=str(payload["display_name"]),
+            metadata=dict(payload.get("metadata", {})),
         )
 
-    def _build_showdown_state(self, result: Any) -> WebShowdownState:
-        revealed_seats = tuple(
-            WebShowdownReveal(
-                seat_id=event.payload["seat_id"],
-                hole_cards=tuple(event.payload["hole_cards"]),
-            )
-            for event in result.events
-            if event.event_type == "showdown_revealed"
-        )
-        winners = tuple(
-            WebShowdownWinner(
-                seat_id=event.payload["seat_id"],
-                amount=event.payload["amount"],
-            )
-            for event in result.events
-            if event.event_type == "pot_awarded"
-        )
-        return WebShowdownState(
-            revealed_seats=revealed_seats,
-            winners=winners,
-        )
+    def _sanitize_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        sanitized = json.loads(json.dumps(snapshot))
+        sanitized.pop("participants", None)
+        sanitized.pop("viewer_actor", None)
+        if sanitized.get("config_summary", {}).get("human_transport") == "web":
+            summary = sanitized["config_summary"]
+            summary["web_seats"] = summary.get("web_seats", summary.get("human_seats"))
+            summary["claimed_web_seats"] = summary.get("claimed_web_seats", summary.get("claimed_human_seats"))
+        return sanitized
 
-    @staticmethod
-    def _should_publish_web_update(update: PlayerUpdate) -> bool:
-        if update.update_type != PlayerUpdateType.HAND_COMPLETED:
-            return True
-        return not any(event.event_type == "showdown_started" for event in update.events)
-
-    def _authorize_view(self, session: WebTableSession, seat_token: str | None) -> str | None:
-        if session.find_reservation_by_token(seat_token) is not None:
-            return seat_token
-        if session.status == TelegramTableState.WAITING:
-            return None
-        raise PermissionError("A valid seat token is required to view this table.")
-
-    def _require_table(self, table_id: str) -> WebTableSession:
-        table = self.registry.get_table(table_id)
-        if table is None:
-            raise KeyError(table_id)
-        return table
-
-    def _require_reservation(self, session: WebTableSession, seat_token: str | None) -> Any:
-        reservation = session.find_reservation_by_token(seat_token)
-        if reservation is None:
-            raise PermissionError("A valid seat token is required.")
-        return reservation
-
-    def _sync_waiting_message(self, session: WebTableSession) -> None:
-        if session.status != TelegramTableState.WAITING:
-            return
-        if session.is_full():
-            session.status_message = f"Table {session.table_id} is ready to start."
-            return
-        session.status_message = (
-            f"Waiting for {session.open_web_seat_count()} more player"
-            f"{'' if session.open_web_seat_count() == 1 else 's'}."
+    def _make_actor(self, display_name: str) -> ActorRef:
+        return ActorRef(
+            transport="web",
+            external_id=secrets.token_urlsafe(12),
+            display_name=display_name,
         )
 
     def _validate_table_request(
@@ -769,6 +487,19 @@ class WebApp:
                 text="turn_timeout_seconds must be positive when set."
             )
 
+    def _build_local_backend(self) -> LocalBackendClient:
+        service = LocalTableBackendService(
+            llm_client_factory=self._llm_client_factory,
+            coach_client_factory=self._coach_client_factory,
+            llm_name_allocator=self._llm_name_allocator,
+            llm_recent_hand_count=self.config.llm.recent_hand_count,
+            llm_thought_logging=self.config.llm.thought_logging,
+            coach_enabled=self.config.coach.enabled,
+            coach_recent_hand_count=self.config.coach.recent_hand_count,
+            showdown_delay_seconds=self.config.showdown_delay_seconds,
+        )
+        return LocalBackendClient(service)
+
     def _big_blind_presets(self) -> tuple[int, ...]:
         default_big_blind = self._default_big_blind()
         valid_presets = {preset for preset in self.config.big_blind_presets if preset > 0 and preset % 2 == 0}
@@ -794,34 +525,15 @@ class WebApp:
     def _default_stack_depth(self, big_blind: int) -> int:
         return max(1, round(self.config.starting_stack / max(1, big_blind)))
 
-    @staticmethod
-    def _format_action_label(action: PlayerAction) -> str:
-        return action.action_type.value if action.amount is None else f"{action.action_type.value} {action.amount}"
-
     def _default_llm_client_factory(self) -> LLMGameClient:
         if self.config.llm.model is None or self.config.llm.api_key is None:
             raise RuntimeError("LLM model and API key are required to create LLM seats")
-        return LLMGameClient(
-            settings=self.config.llm,
-        )
+        return LLMGameClient(settings=self.config.llm)
 
     def _default_coach_client_factory(self) -> LLMGameClient:
         if self.config.coach.model is None or self.config.coach.api_key is None:
             raise RuntimeError("Coach model and API key are required when coach is enabled")
         return LLMGameClient(settings=self.config.coach)
-
-    def _build_table_coach(self) -> TableCoach | None:
-        if not self.config.coach.enabled:
-            return None
-        return TableCoach(
-            self._coach_client_factory(),
-            recent_hand_count=self.config.coach.recent_hand_count,
-        )
-
-    def _allocate_llm_name(self) -> str:
-        if self._llm_name_allocator is None:
-            self._llm_name_allocator = BotNameAllocator()
-        return self._llm_name_allocator.allocate()
 
     def _html_response(self, *, title: str, body_attributes: str, script_name: str) -> Any:
         web = self._require_aiohttp()

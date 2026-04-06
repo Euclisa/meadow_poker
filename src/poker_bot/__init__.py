@@ -1,6 +1,8 @@
 """Poker bot package."""
 
 from poker_bot.config import (
+    BackendMode,
+    BackendSettings,
     CoachSettings,
     DEFAULT_CONFIG_PATH,
     GameSettings,
@@ -12,6 +14,9 @@ from poker_bot.config import (
     WebSettings,
     load_project_config,
 )
+from poker_bot.backend import ActorRef, ManagedTableConfig, TableBackend
+from poker_bot.backend.http import HttpBackendClient
+from poker_bot.backend.service import LocalBackendClient, LocalTableBackendService
 from poker_bot.orchestrator import GameOrchestrator
 from poker_bot.poker.decks import (
     DeckSequenceFactory,
@@ -23,8 +28,8 @@ from poker_bot.poker.decks import (
 )
 from poker_bot.poker.engine import PokerEngine
 from poker_bot.replay import HandReplayBuildError, HandReplaySession, validate_hand_trace
-from poker_bot.telegram_app import TelegramActionRouter, TelegramApp, TelegramAppConfig, TelegramTableRegistry, TelegramTableSession
-from poker_bot.web_app import WebApp, WebAppConfig, WebPlayerAgent, WebTableRegistry, WebTableSession
+from poker_bot.telegram_app import TelegramApp, TelegramAppConfig
+from poker_bot.web_app import WebApp, WebAppConfig
 from poker_bot.types import (
     ActionResult,
     ActionType,
@@ -48,17 +53,17 @@ from poker_bot.types import (
     ReplayFrame,
     SeatConfig,
     TableConfig,
-    TelegramPendingActionState,
-    TelegramTableCreateRequest,
     TelegramTableState,
-    TelegramTableStatus,
 )
 
 __all__ = [
     "ActionResult",
     "ActionType",
     "ActionValidationError",
+    "ActorRef",
     "AutomaticProgressResult",
+    "BackendMode",
+    "BackendSettings",
     "CoachSettings",
     "DEFAULT_CONFIG_PATH",
     "DecisionRequest",
@@ -79,6 +84,9 @@ __all__ = [
     "LegalAction",
     "LLMProviderSettings",
     "LLMSettings",
+    "LocalBackendClient",
+    "LocalTableBackendService",
+    "ManagedTableConfig",
     "OpenRouterSettings",
     "PlayerAction",
     "PlayerView",
@@ -89,21 +97,14 @@ __all__ = [
     "SeatConfig",
     "TableConfig",
     "TelegramSettings",
-    "TelegramActionRouter",
     "TelegramApp",
     "TelegramAppConfig",
-    "TelegramPendingActionState",
-    "TelegramTableCreateRequest",
-    "TelegramTableRegistry",
-    "TelegramTableSession",
     "TelegramTableState",
-    "TelegramTableStatus",
+    "TableBackend",
     "WebApp",
     "WebAppConfig",
-    "WebPlayerAgent",
     "WebSettings",
-    "WebTableRegistry",
-    "WebTableSession",
+    "HttpBackendClient",
     "DeckSequenceFactory",
     "OrderedDeck",
     "OrderedDeckFactory",

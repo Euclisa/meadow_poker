@@ -172,6 +172,16 @@ def render_cli_events(update: PlayerUpdate) -> str:
     return "\n".join(lines)
 
 
+def render_cli_public_events(events: tuple[GameEvent, ...], view: PublicTableView) -> str:
+    seat_names = {seat.seat_id: seat.name for seat in view.seats}
+    lines: list[str] = []
+    for event in events:
+        rendered = _render_cli_event(event, seat_names=seat_names)
+        if rendered is not None:
+            lines.append(rendered)
+    return "\n".join(lines)
+
+
 def render_cli_standings(view: PublicTableView) -> str:
     ranked = sorted(view.seats, key=lambda s: s.stack, reverse=True)
     lines = [f"\n{_SEPARATOR}", "  Final standings", _SEPARATOR]
