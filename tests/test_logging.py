@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from poker_bot.logging_utils import PACKAGE_LOGGER_NAME, configure_logging
+from meadow.logging_utils import PACKAGE_LOGGER_NAME, configure_logging
 
 
 def test_cli_mode_defaults_to_warning() -> None:

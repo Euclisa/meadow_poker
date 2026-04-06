@@ -4,13 +4,13 @@ import asyncio
 import json
 from urllib.parse import urlparse
 
-from poker_bot.backend.models import ActorRef, ManagedTableConfig
-from poker_bot.backend.serialization import player_action_from_dict
-from poker_bot.backend.service import BackendError
-from poker_bot.backend.service import LocalTableBackendService
-from poker_bot.config import CoachSettings, LLMSettings
-from poker_bot.naming import BotNameAllocator
-from poker_bot.players.llm import LLMGameClient
+from meadow.backend.models import ActorRef, ManagedTableConfig
+from meadow.backend.serialization import player_action_from_dict
+from meadow.backend.service import BackendError
+from meadow.backend.service import LocalTableBackendService
+from meadow.config import CoachSettings, LLMSettings
+from meadow.naming import BotNameAllocator
+from meadow.players.llm import LLMGameClient
 
 
 class FakeResponsesAPI:
@@ -204,7 +204,7 @@ class _InMemoryResponseTask:
 
 
 def make_http_backend_client(service: LocalTableBackendService):
-    from poker_bot.backend.http import HttpBackendClient
+    from meadow.backend.http import HttpBackendClient
 
     return HttpBackendClient("http://backend.test", session=InMemoryBackendSession(service))
 

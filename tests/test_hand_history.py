@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from poker_bot.hand_history import render_live_public_hand_summary, render_public_completed_hand_summary
-from poker_bot.types import GameEvent, GamePhase, HandRecord, HandRecordStatus, PublicTableView, SeatSnapshot
+from meadow.hand_history import render_live_public_hand_summary, render_public_completed_hand_summary
+from meadow.types import GameEvent, GamePhase, HandRecord, HandRecordStatus, PublicTableView, SeatSnapshot
 
 
 def _make_public_view(*, hand_number: int, phase: GamePhase, board_cards: tuple[str, ...]) -> PublicTableView:

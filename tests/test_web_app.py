@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 
-from poker_bot.config import CoachSettings, LLMSettings
-from poker_bot.web_app.app import WebApp, WebAppConfig
+from meadow.config import CoachSettings, LLMSettings
+from meadow.web_app.app import WebApp, WebAppConfig
 
 from support import make_backend_service, make_http_backend_client
 

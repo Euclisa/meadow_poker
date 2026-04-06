@@ -1,0 +1,17 @@
+[Unit]
+Description=Meadow backend service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=meadow
+Group=meadow
+WorkingDirectory=/home/meadow/app
+Environment=PYTHONPATH=src
+ExecStart=/home/meadow/app/.venv/bin/python -m meadow --config config/config.toml backend
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

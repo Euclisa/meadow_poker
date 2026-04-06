@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from poker_bot.orchestrator import GameOrchestrator
-from poker_bot.players.base import PlayerAgent
-from poker_bot.poker.decks import DeckSequenceFactory
-from poker_bot.poker.engine import PokerEngine
-from poker_bot.types import ActionType, DecisionRequest, PlayerAction, PlayerUpdate, SeatConfig, TableConfig
+from meadow.orchestrator import GameOrchestrator
+from meadow.players.base import PlayerAgent
+from meadow.poker.decks import DeckSequenceFactory
+from meadow.poker.engine import PokerEngine
+from meadow.types import ActionType, DecisionRequest, PlayerAction, PlayerUpdate, SeatConfig, TableConfig
 
 
 class ScriptedAgent(PlayerAgent):

@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "poker-bot"
+name = "meadow"
 version = "0.1.0"
-description = "Transport-agnostic poker bot engine with CLI, Telegram, and LLM player agents."
+description = "Meadow is a transport-agnostic poker engine with CLI, Telegram, web, and LLM player agents."
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = []
@@ -16,8 +16,19 @@ telegram = ["aiogram>=3.0.0"]
 web = ["aiohttp>=3.10.0"]
 dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0"]
 
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.setuptools.package-data]
-"poker_bot" = ["data/*.txt", "web_app/static/*"]
+"meadow" = [
+    "data/*.txt",
+    "web_app/static/css/*.css",
+    "web_app/static/js/*.js",
+    "web_app/static/img/*",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from poker_bot.table_runner import run_table
-from poker_bot.types import HandRunResult
+from meadow.table_runner import run_table
+from meadow.types import HandRunResult
 
 
 class FakeHandRunner:

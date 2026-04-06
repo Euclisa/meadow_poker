@@ -1,9 +1,9 @@
 import pytest
 
-from poker_bot.poker.cards import best_hand_details, best_hand_rank, rank_five_cards
-from poker_bot.poker.decks import DeckSequenceFactory
-from poker_bot.poker.engine import PokerEngine
-from poker_bot.types import ActionType, GamePhase, PlayerAction, SeatConfig, TableConfig
+from meadow.poker.cards import best_hand_details, best_hand_rank, rank_five_cards
+from meadow.poker.decks import DeckSequenceFactory
+from meadow.poker.engine import PokerEngine
+from meadow.types import ActionType, GamePhase, PlayerAction, SeatConfig, TableConfig
 
 
 def make_engine(

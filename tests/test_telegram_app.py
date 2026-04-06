@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
-from poker_bot.config import CoachSettings, LLMSettings
-from poker_bot.naming import BotNameAllocator
-from poker_bot.telegram_app.app import TelegramApp, TelegramAppConfig
+from meadow.config import CoachSettings, LLMSettings
+from meadow.naming import BotNameAllocator
+from meadow.telegram_app.app import TelegramApp, TelegramAppConfig
 
 from support import make_backend_service, make_http_backend_client
 

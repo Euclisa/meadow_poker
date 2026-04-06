@@ -4,10 +4,10 @@ import asyncio
 
 import pytest
 
-from poker_bot.coach import TableCoach
-from poker_bot.config import CoachSettings
-from poker_bot.players.llm import LLMGameClient
-from poker_bot.types import (
+from meadow.coach import TableCoach
+from meadow.config import CoachSettings
+from meadow.players.llm import LLMGameClient
+from meadow.types import (
     ActionType,
     DecisionRequest,
     GameEvent,

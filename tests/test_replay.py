@@ -5,18 +5,18 @@ from dataclasses import replace
 
 import pytest
 
-from poker_bot.orchestrator import GameOrchestrator
-from poker_bot.players.base import PlayerAgent
-from poker_bot.poker.decks import DeckSequenceFactory, decode_card_order, encode_card_order
-from poker_bot.poker.engine import PokerEngine
-from poker_bot.replay import (
+from meadow.orchestrator import GameOrchestrator
+from meadow.players.base import PlayerAgent
+from meadow.poker.decks import DeckSequenceFactory, decode_card_order, encode_card_order
+from meadow.poker.engine import PokerEngine
+from meadow.replay import (
     HandReplayBuildError,
     HandReplaySession,
     ReplayAnalysisError,
     build_replay_decision_spot,
     validate_hand_trace,
 )
-from poker_bot.types import ActionType, DecisionRequest, PlayerAction, PlayerUpdate, SeatConfig, TableConfig
+from meadow.types import ActionType, DecisionRequest, PlayerAction, PlayerUpdate, SeatConfig, TableConfig
 
 
 class ScriptedAgent(PlayerAgent):

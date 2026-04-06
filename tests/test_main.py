@@ -4,10 +4,10 @@ import asyncio
 
 import pytest
 
-from poker_bot.backend.service import LocalBackendClient
-from poker_bot.config import BackendSettings, GameSettings, LLMSettings, ProjectConfig, TelegramSettings, WebSettings
-import poker_bot.main as main_module
-from poker_bot.main import run_cli_mode
+from meadow.backend.service import LocalBackendClient
+from meadow.config import BackendSettings, GameSettings, LLMSettings, ProjectConfig, TelegramSettings, WebSettings
+import meadow.main as main_module
+from meadow.main import run_cli_mode
 
 from support import make_backend_service
 

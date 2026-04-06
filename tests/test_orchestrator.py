@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from poker_bot.orchestrator import GameOrchestrator, resolve_fallback_action
-from poker_bot.players.base import PlayerAgent
-from poker_bot.poker.decks import DeckSequenceFactory
-from poker_bot.poker.engine import PokerEngine
-from poker_bot.types import (
+from meadow.orchestrator import GameOrchestrator, resolve_fallback_action
+from meadow.players.base import PlayerAgent
+from meadow.poker.decks import DeckSequenceFactory
+from meadow.poker.engine import PokerEngine
+from meadow.types import (
     ActionType,
     DecisionRequest,
     HandRecordStatus,

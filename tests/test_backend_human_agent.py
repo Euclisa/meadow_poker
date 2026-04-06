@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from poker_bot.backend.service import BackendHumanAgent
-from poker_bot.types import ActionType, DecisionRequest, LegalAction, PlayerAction, PlayerUpdate, PlayerUpdateType, PlayerView, PublicTableView, SeatSnapshot, GamePhase
+from meadow.backend.service import BackendHumanAgent
+from meadow.types import ActionType, DecisionRequest, LegalAction, PlayerAction, PlayerUpdate, PlayerUpdateType, PlayerView, PublicTableView, SeatSnapshot, GamePhase
 
 
 def make_decision() -> DecisionRequest:

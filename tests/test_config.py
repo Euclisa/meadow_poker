@@ -4,7 +4,7 @@ from textwrap import dedent
 
 import pytest
 
-from poker_bot.config import CoachSettings, OpenRouterSettings, ThoughtLoggingMode, load_project_config
+from meadow.config import CoachSettings, OpenRouterSettings, ThoughtLoggingMode, load_project_config
 
 
 def test_load_project_config_resolves_matching_openrouter_settings(tmp_path) -> None:

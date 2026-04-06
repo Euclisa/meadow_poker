@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from poker_bot.naming import BotNameAllocator
+from meadow.naming import BotNameAllocator
 
 
 def test_bot_name_allocator_adds_bot_suffix_and_uses_fallbacks() -> None:

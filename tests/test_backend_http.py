@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 
-from poker_bot.backend.http import HttpBackendClient
-from poker_bot.backend.models import ActorRef, ManagedTableConfig
-from poker_bot.types import TelegramTableState
+from meadow.backend.http import HttpBackendClient
+from meadow.backend.models import ActorRef, ManagedTableConfig
+from meadow.types import TelegramTableState
 
 from support import make_backend_service, make_http_backend_client
 
