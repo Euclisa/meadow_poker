@@ -8,8 +8,8 @@ from typing import Any
 
 from meadow.config import CoachSettings, LLMSettings, ThoughtLoggingMode
 from meadow.hand_history import render_private_completed_hand_summary
-from meadow.players.base import PlayerAgent
-from meadow.players.rendering import render_player_update
+from meadow.player_agent import PlayerAgent
+from meadow.rendering.core import render_player_update
 from meadow.types import (
     ActionType,
     DecisionRequest,
@@ -259,116 +259,92 @@ class LLMPlayerAgent(PlayerAgent):
 
     def _reset_history_if_needed(self, decision: DecisionRequest) -> None:
         hand_number = decision.public_table_view.hand_number
-        if self._current_hand_number != hand_number:
-            self._current_hand_number = hand_number
-            self._history.clear()
-            self._buffered_updates = [
-                update
-                for update in self._buffered_updates
-                if update.public_table_view.hand_number == hand_number
-            ]
+        if self._current_hand_number == hand_number:
+            return
+        self._current_hand_number = hand_number
+        self._history.clear()
+        self._buffered_updates.clear()
 
     def _build_prompt(self, decision: DecisionRequest) -> str:
-        legal_lines = []
-        for action in decision.legal_actions:
-            if action.min_amount is None:
-                legal_lines.append(action.action_type.value)
-            else:
-                legal_lines.append(
-                    f"{action.action_type.value} total={action.min_amount}..{action.max_amount}"
+        summary_parts = [
+            "Current decision:",
+            render_player_update(
+                PlayerUpdate(
+                    update_type=PlayerUpdateType.TURN_STARTED,
+                    events=(),
+                    public_table_view=decision.public_table_view,
+                    player_view=decision.player_view,
+                    acting_seat_id=decision.acting_seat_id,
+                    is_your_turn=True,
                 )
-
-        parts = [
-            f"Seat id: {decision.player_view.seat_id}",
-            f"Player name: {decision.player_view.player_name}",
+            ),
+            "",
+            render_player_update(
+                PlayerUpdate(
+                    update_type=PlayerUpdateType.TURN_STARTED,
+                    events=(),
+                    public_table_view=decision.public_table_view,
+                    player_view=decision.player_view,
+                    acting_seat_id=decision.acting_seat_id,
+                    is_your_turn=True,
+                ),
+                compact=True,
+            ),
+            "",
             f"Hole cards: {' '.join(decision.player_view.hole_cards)}",
-            f"Board cards: {' '.join(decision.public_table_view.board_cards) or '-'}",
-            f"Pot total: {decision.public_table_view.pot_total}",
-            f"Current bet: {decision.public_table_view.current_bet}",
-            f"To call: {decision.player_view.to_call}",
-            f"Stack: {decision.player_view.stack}",
-            "Opponents:",
+            f"Legal actions: {', '.join(self._format_legal_action(action) for action in decision.legal_actions)}",
         ]
-        for seat in decision.public_table_view.seats:
-            if seat.seat_id == decision.player_view.seat_id:
-                continue
-            parts.append(
-                f"- {seat.seat_id} {seat.name}: stack={seat.stack} folded={seat.folded} all_in={seat.all_in}"
-            )
-        parts.extend(
-            [
-                "Updates since your last turn:",
-                self._render_buffered_updates(),
-                "Legal actions:",
-                *legal_lines,
-            ]
-        )
+        history_text = self._render_buffered_updates()
+        if history_text:
+            summary_parts.extend(["", "Recent events:", history_text])
         if decision.validation_error is not None:
-            parts.append(f"Previous action was invalid: {decision.validation_error.message}")
-        parts.append(
-            'Output requirements: return exactly one valid JSON object and nothing before or after it.'
-        )
-        parts.append(
-            'Valid examples: {"action":"fold"}, {"action":"check"}, {"action":"call"}, {"action":"bet","amount":400}, {"action":"raise","amount":400}.'
-        )
-        parts.append(
-            'Invalid examples: Here is my move: {"action":"call"}, ```json {"action":"call"} ```, or any explanation text.'
-        )
-        return "\n".join(parts)
+            summary_parts.extend(["", f"Previous action was invalid: {decision.validation_error.message}"])
+        return "\n".join(summary_parts)
 
     def _render_buffered_updates(self) -> str:
-        if not self._buffered_updates:
-            return "No updates."
         return "\n\n".join(render_player_update(update, compact=True) for update in self._buffered_updates)
 
-    def _parse_action(self, payload: dict[str, Any]) -> PlayerAction:
-        raw_action = payload.get("action")
-        if raw_action is None:
-            raise ValueError("LLM response must contain an action field")
+    @staticmethod
+    def _format_legal_action(action) -> str:
+        if action.action_type in {ActionType.BET, ActionType.RAISE}:
+            return f"{action.action_type.value} {action.min_amount}-{action.max_amount}"
+        return action.action_type.value
+
+    @staticmethod
+    def _parse_action(payload: dict[str, Any]) -> PlayerAction:
+        raw_action = str(payload.get("action", "")).strip().lower()
         try:
             action_type = ActionType(raw_action)
         except ValueError as exc:
-            raise ValueError(f"Unsupported LLM action: {raw_action}") from exc
-
+            raise ValueError(f"Unsupported action '{raw_action}'") from exc
         amount = payload.get("amount")
-        if amount is not None:
-            amount = int(amount)
-        return PlayerAction(action_type=action_type, amount=amount)
+        if amount is None:
+            return PlayerAction(action_type=action_type)
+        try:
+            parsed_amount = int(amount)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Action amount must be an integer") from exc
+        return PlayerAction(action_type=action_type, amount=parsed_amount)
 
     async def _update_reflection_note(self) -> None:
         messages = [{"role": "developer", "content": self._REFLECTION_PROMPT}]
-        reflection_parts = [
-            "Completed hand summaries to synthesize:",
+        prompt_parts = [
+            "Completed private hand summaries to synthesize:",
             "\n\n".join(self._pending_hand_summaries),
         ]
         if self._reflection_note is not None:
-            reflection_parts.extend(
+            prompt_parts.extend(
                 [
                     "",
-                    "Your current observations:",
+                    "Your current note:",
                     self._reflection_note,
                     "",
-                    "Revise your observations using the new summaries.",
+                    "Revise the note using the new completed hands.",
                 ]
             )
         else:
-            reflection_parts.extend(
-                [
-                    "",
-                    "Write your first observations note based on these summaries.",
-                ]
-            )
-        messages.append({"role": "user", "content": "\n".join(reflection_parts)})
-        try:
-            updated_note = await self.client.complete_text(messages)
-        except Exception:
-            logger.warning("LLM reflection note update failed seat_id=%s", self.seat_id)
-            return
-        self._reflection_note = updated_note.strip()
-        if self.thought_logging.logs_reflection_notes and self._reflection_note:
-            logger.info(
-                "LLM thought seat_id=%s type=reflection_note\n%s",
-                self.seat_id,
-                self._reflection_note,
-            )
+            prompt_parts.extend(["", "Write the first note based on these hands."])
+        messages.append({"role": "user", "content": "\n".join(prompt_parts)})
+        updated_note = (await self.client.complete_text(messages)).strip()
         self._pending_hand_summaries.clear()
+        self._reflection_note = updated_note or self._reflection_note

@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from meadow.orchestrator import GameOrchestrator
-from meadow.players.base import PlayerAgent
+from meadow.player_agent import PlayerAgent
 from meadow.poker.decks import DeckSequenceFactory, decode_card_order, encode_card_order
 from meadow.poker.engine import PokerEngine
 from meadow.replay import (

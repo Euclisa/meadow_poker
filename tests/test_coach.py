@@ -6,7 +6,7 @@ import pytest
 
 from meadow.coach import TableCoach
 from meadow.config import CoachSettings
-from meadow.players.llm import LLMGameClient
+from meadow.llm_bot import LLMGameClient
 from meadow.types import (
     ActionType,
     DecisionRequest,

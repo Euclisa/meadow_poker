@@ -10,7 +10,7 @@ from meadow.backend.service import BackendError
 from meadow.backend.service import LocalTableBackendService
 from meadow.config import CoachSettings, LLMSettings
 from meadow.naming import BotNameAllocator
-from meadow.players.llm import LLMGameClient
+from meadow.llm_bot import LLMGameClient
 
 
 class FakeResponsesAPI:

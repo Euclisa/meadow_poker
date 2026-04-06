@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass
 
 from meadow.orchestrator import GameOrchestrator
-from meadow.players.base import PlayerAgent
+from meadow.player_agent import PlayerAgent
 from meadow.poker.decks import DeckSequenceFactory
 from meadow.poker.engine import PokerEngine
 from meadow.types import ActionType, DecisionRequest, PlayerAction, PlayerUpdate, SeatConfig, TableConfig

@@ -12,7 +12,7 @@ from meadow.backend.models import ActorRef, ManagedTableConfig
 from meadow.backend.service import BackendError, LocalBackendClient, LocalTableBackendService
 from meadow.config import CoachSettings, LLMSettings
 from meadow.naming import BotNameAllocator
-from meadow.players.llm import LLMGameClient
+from meadow.llm_bot import LLMGameClient
 
 logger = logging.getLogger(__name__)
 

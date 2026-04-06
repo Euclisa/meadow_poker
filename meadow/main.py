@@ -12,8 +12,14 @@ from meadow.backend.service import LocalBackendClient, LocalTableBackendService
 from meadow.config import DEFAULT_CONFIG_PATH, LLMSettings, ProjectConfig, load_project_config
 from meadow.logging_utils import configure_logging
 from meadow.naming import BotNameAllocator
-from meadow.players.llm import LLMGameClient
-from meadow.players.rendering import render_cli_events, render_cli_public_events, render_cli_standings, render_cli_status, render_cli_turn_prompt
+from meadow.llm_bot import LLMGameClient
+from meadow.rendering.cli import (
+    render_cli_events,
+    render_cli_public_events,
+    render_cli_standings,
+    render_cli_status,
+    render_cli_turn_prompt,
+)
 from meadow.telegram_app.app import TelegramApp, TelegramAppConfig
 from meadow.types import ActionType, PlayerAction, PlayerUpdate, PlayerUpdateType
 

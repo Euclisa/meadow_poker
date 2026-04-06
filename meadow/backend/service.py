@@ -26,8 +26,8 @@ from meadow.backend.serialization import (
 )
 from meadow.coach import CoachRequestError, TableCoach
 from meadow.config import ThoughtLoggingMode
-from meadow.players.base import PlayerAgent
-from meadow.players.llm import LLMGameClient, LLMPlayerAgent
+from meadow.llm_bot import LLMGameClient, LLMPlayerAgent
+from meadow.player_agent import PlayerAgent
 from meadow.poker.engine import PokerEngine
 from meadow.replay import HandReplayBuildError, HandReplaySession, ReplayAnalysisError, build_replay_decision_spot
 from meadow.table_runner import run_table

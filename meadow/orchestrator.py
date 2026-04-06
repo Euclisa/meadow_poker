@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Awaitable, Callable, Sequence
 
-from meadow.players.base import PlayerAgent
+from meadow.player_agent import PlayerAgent
 from meadow.poker.engine import PokerEngine
 from meadow.table_runner import run_table
 from meadow.types import (

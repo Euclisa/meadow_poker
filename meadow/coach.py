@@ -9,8 +9,8 @@ from meadow.hand_history import (
     render_live_public_hand_summary,
     render_public_completed_hand_summary,
 )
-from meadow.players.llm import LLMGameClient
-from meadow.players.rendering import render_decision_summary
+from meadow.llm_bot import LLMGameClient
+from meadow.rendering.core import render_decision_summary
 from meadow.types import DecisionRequest, HandRecord, HandTransition
 
 logger = logging.getLogger(__name__)

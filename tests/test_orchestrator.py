@@ -4,7 +4,7 @@ import asyncio
 from typing import Any
 
 from meadow.orchestrator import GameOrchestrator, resolve_fallback_action
-from meadow.players.base import PlayerAgent
+from meadow.player_agent import PlayerAgent
 from meadow.poker.decks import DeckSequenceFactory
 from meadow.poker.engine import PokerEngine
 from meadow.types import (

@@ -12,8 +12,8 @@ from meadow.backend.serialization import game_event_from_dict, snapshot_pending_
 from meadow.backend.service import BackendError, LocalBackendClient, LocalTableBackendService
 from meadow.config import CoachSettings, LLMSettings
 from meadow.naming import BotNameAllocator
-from meadow.players.llm import LLMGameClient
-from meadow.players.rendering import (
+from meadow.llm_bot import LLMGameClient
+from meadow.rendering.telegram import (
     render_telegram_status_panel,
     render_telegram_turn_prompt,
     render_telegram_update_messages,
