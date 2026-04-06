@@ -47,6 +47,7 @@ const state = {
   createStackDepth: "",
   createAntePreset: "",
   createTurnTimeout: "",
+  createIdleClose: "",
   joinName: "",
   joinCode: "",
   busy: false,
@@ -78,7 +79,8 @@ export function renderLobbyMarkup(model) {
     big_blind_presets: [20, 50, 100, 200, 500],
     stack_depth_presets: [20, 40, 100, 200],
     ante_presets: [0, 0.1, 0.2, 0.5, 1],
-    turn_timeout_seconds: null,
+    turn_timeout_seconds: 30,
+    idle_close_seconds: 300,
   };
   const selectedTotalSeats = Number(model.createTotalSeats || Math.min(4, defaults.max_players));
   const selectedLlmSeats = Math.min(
@@ -94,12 +96,19 @@ export function renderLobbyMarkup(model) {
   const selectedTurnTimeout = model.createTurnTimeout === ""
     ? defaults.turn_timeout_seconds
     : Number(model.createTurnTimeout);
+  const selectedIdleClose = model.createIdleClose === ""
+    ? defaults.idle_close_seconds
+    : Number(model.createIdleClose);
+  const renderedTurnTimeoutValue = model.createTurnTimeout === ""
+    ? String(defaults.turn_timeout_seconds ?? "")
+    : String(model.createTurnTimeout);
+  const renderedIdleCloseValue = model.createIdleClose === ""
+    ? String(defaults.idle_close_seconds ?? "")
+    : String(model.createIdleClose);
   const selectedSmallBlind = Math.max(1, Math.floor(selectedBigBlind / 2));
   const selectedAnte = selectedAntePreset > 0 ? Math.round(selectedBigBlind * selectedAntePreset) : 0;
   const selectedStartingStack = selectedBigBlind * selectedStackDepth;
-  const turnTimeoutLabel = selectedTurnTimeout && Number.isFinite(selectedTurnTimeout)
-    ? `${selectedTurnTimeout}s`
-    : "Off";
+  const turnTimeoutLabel = `${selectedTurnTimeout}s`;
 
   const playerOptions = Array.from({ length: Math.max(0, defaults.max_players - 1) }, (_, index) => index + 2)
     .map(
@@ -187,7 +196,6 @@ export function renderLobbyMarkup(model) {
                   <p class="eyebrow">Game Settings</p>
                   <h3>Choose the pace</h3>
                 </div>
-                <span class="chip chip--soft">${formatChips(selectedSmallBlind)} / ${formatChips(selectedBigBlind)}</span>
               </div>
               <div class="settings-card__grid">
                 <label class="field">
@@ -204,7 +212,11 @@ export function renderLobbyMarkup(model) {
                 </label>
                 <label class="field">
                   <span>Turn timer</span>
-                  <input id="create-turn-timeout" name="turn_timeout_seconds" type="number" min="1" step="1" value="${escapeHtml(model.createTurnTimeout)}" placeholder="Off">
+                  <input id="create-turn-timeout" name="turn_timeout_seconds" type="number" min="1" max="180" step="1" value="${escapeHtml(renderedTurnTimeoutValue)}" required>
+                </label>
+                <label class="field">
+                  <span>Idle close</span>
+                  <input id="create-idle-close" name="idle_close_seconds" type="number" min="${escapeHtml(String(selectedTurnTimeout))}" max="1800" step="1" value="${escapeHtml(renderedIdleCloseValue)}" required>
                 </label>
               </div>
               <div class="settings-card__summary">
@@ -227,6 +239,10 @@ export function renderLobbyMarkup(model) {
                 <div class="settings-stat">
                   <span>Turn timer</span>
                   <strong>${escapeHtml(turnTimeoutLabel)}</strong>
+                </div>
+                <div class="settings-stat">
+                  <span>Idle close</span>
+                  <strong>${escapeHtml(`${selectedIdleClose}s`)}</strong>
                 </div>
               </div>
             </section>
@@ -283,6 +299,7 @@ export function renderLobbyMarkup(model) {
                           <div><dt>Ante</dt><dd>${escapeHtml(formatAnte(table.ante, table.big_blind))}</dd></div>
                           <div><dt>Stack</dt><dd>${formatChips(table.starting_stack)} (${table.stack_depth} BB)</dd></div>
                           <div><dt>Turn timer</dt><dd>${table.turn_timeout_seconds ? `${escapeHtml(String(table.turn_timeout_seconds))}s` : "Off"}</dd></div>
+                          <div><dt>Idle close</dt><dd>${table.idle_close_seconds ? `${escapeHtml(String(table.idle_close_seconds))}s` : "Off"}</dd></div>
                           <div><dt>Players</dt><dd>${table.waiting_players.map((player) => escapeHtml(player.display_name)).join(", ")}</dd></div>
                         </dl>
                         <div class="table-card__actions">
@@ -328,6 +345,7 @@ function bindDelegatedEvents() {
     const target = event.target;
     if (target.id === "create-name") { state.createName = target.value; }
     if (target.id === "create-turn-timeout") { state.createTurnTimeout = target.value; }
+    if (target.id === "create-idle-close") { state.createIdleClose = target.value; }
     if (target.id === "join-name") { state.joinName = target.value; }
     if (target.id === "join-code") { state.joinCode = target.value.trim(); }
     render();
@@ -374,7 +392,8 @@ async function onCreateTable(event) {
         big_blind: Number(form.get("big_blind")),
         stack_depth: Number(form.get("stack_depth")),
         ante: Math.round(Number(form.get("big_blind")) * Number(form.get("ante_preset") || 0)),
-        turn_timeout_seconds: form.get("turn_timeout_seconds") ? Number(form.get("turn_timeout_seconds")) : null,
+        turn_timeout_seconds: Number(form.get("turn_timeout_seconds")),
+        idle_close_seconds: Number(form.get("idle_close_seconds")),
       }),
     });
     storeSeatToken(payload.table_id, payload.seat_token);

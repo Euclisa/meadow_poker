@@ -9,7 +9,14 @@ from typing import Any
 
 from meadow.backend.models import ActorRef, ManagedTableConfig
 from meadow.backend.serialization import game_event_from_dict, snapshot_pending_decision, snapshot_player_view, snapshot_public_table_view
-from meadow.backend.service import BackendError, LocalBackendClient, LocalTableBackendService
+from meadow.backend.service import (
+    BackendError,
+    DEFAULT_HUMAN_IDLE_CLOSE_SECONDS,
+    LocalBackendClient,
+    LocalTableBackendService,
+    MAX_HUMAN_IDLE_CLOSE_SECONDS,
+    MAX_HUMAN_TURN_TIMEOUT_SECONDS,
+)
 from meadow.config import CoachSettings, LLMSettings
 from meadow.naming import BotNameAllocator
 from meadow.llm_bot import LLMGameClient
@@ -49,6 +56,8 @@ class _CreateTableFlowState:
     starting_stack: int | None = None
     turn_timeout_seconds: int | None = None
     turn_timeout_configured: bool = False
+    idle_close_seconds: int | None = None
+    idle_close_configured: bool = False
 
 
 @dataclass(slots=True)
@@ -550,15 +559,49 @@ class TelegramApp:
                 await self._send_message(chat_id, "Enter a valid positive starting stack, or type Default.", self._build_create_flow_keyboard())
                 return
             flow.starting_stack = starting_stack
-            await self._send_message(chat_id, "Enter turn timer in seconds, or type Off/Default to disable it.", self._build_create_flow_keyboard())
+            await self._send_message(
+                chat_id,
+                f"Enter turn timer in seconds (1-{MAX_HUMAN_TURN_TIMEOUT_SECONDS}).",
+                self._build_create_flow_keyboard(),
+            )
             return
         if not flow.turn_timeout_configured:
             parsed_timeout = self._parse_turn_timeout(text)
             if parsed_timeout is _INVALID_TIMEOUT:
-                await self._send_message(chat_id, "Enter a positive turn timer in seconds, or type Off/Default.", self._build_create_flow_keyboard())
+                await self._send_message(
+                    chat_id,
+                    f"Enter a turn timer between 1 and {MAX_HUMAN_TURN_TIMEOUT_SECONDS} seconds.",
+                    self._build_create_flow_keyboard(),
+                )
                 return
             flow.turn_timeout_seconds = parsed_timeout
             flow.turn_timeout_configured = True
+            await self._send_message(
+                chat_id,
+                (
+                    "Enter idle-close timer in seconds "
+                    f"({flow.turn_timeout_seconds}-{MAX_HUMAN_IDLE_CLOSE_SECONDS}), "
+                    f"or type Default for {DEFAULT_HUMAN_IDLE_CLOSE_SECONDS}."
+                ),
+                self._build_create_flow_keyboard(),
+            )
+            return
+        if not flow.idle_close_configured:
+            assert flow.turn_timeout_seconds is not None
+            parsed_idle_close = self._parse_idle_close_timeout(text, minimum=flow.turn_timeout_seconds)
+            if parsed_idle_close is _INVALID_TIMEOUT:
+                await self._send_message(
+                    chat_id,
+                    (
+                        "Enter an idle-close timer between "
+                        f"{flow.turn_timeout_seconds} and {MAX_HUMAN_IDLE_CLOSE_SECONDS} seconds, "
+                        f"or type Default for {DEFAULT_HUMAN_IDLE_CLOSE_SECONDS}."
+                    ),
+                    self._build_create_flow_keyboard(),
+                )
+                return
+            flow.idle_close_seconds = parsed_idle_close
+            flow.idle_close_configured = True
         try:
             result = await self.backend.create_table(
                 self._actor(user_id, chat_id, display_name),
@@ -570,6 +613,7 @@ class TelegramApp:
                     ante=flow.ante,
                     starting_stack=flow.starting_stack,
                     turn_timeout_seconds=flow.turn_timeout_seconds,
+                    idle_close_seconds=flow.idle_close_seconds,
                     max_hands_per_table=self.config.max_hands_per_table,
                     max_players=self.config.max_players,
                     human_transport="telegram",
@@ -766,6 +810,7 @@ class TelegramApp:
             f"Ante: {self._format_ante(summary['ante'])}",
             f"Starting stack: {summary['starting_stack']}",
             f"Turn timer: {self._format_turn_timeout(summary['turn_timeout_seconds'])}",
+            f"Idle close: {self._format_turn_timeout(summary['idle_close_seconds'])}",
         ]
         if self._has_multiple_human_players(snapshot):
             lines.append(f"Join with: /join {snapshot['table_id']}")
@@ -786,6 +831,7 @@ class TelegramApp:
             f"Ante: {self._format_ante(summary['ante'])}.",
             f"Starting stack: {summary['starting_stack']}.",
             f"Turn timer: {self._format_turn_timeout(summary['turn_timeout_seconds'])}.",
+            f"Idle close: {self._format_turn_timeout(summary['idle_close_seconds'])}.",
         ]
         if self._is_waiting_table_full(snapshot):
             lines.append(self._format_ready_to_start_hint(snapshot))
@@ -813,6 +859,7 @@ class TelegramApp:
                 f"Ante: {self._format_ante(summary['ante'])}",
                 f"Starting stack: {summary['starting_stack']}",
                 f"Turn timer: {self._format_turn_timeout(summary['turn_timeout_seconds'])}",
+                f"Idle close: {self._format_turn_timeout(summary['idle_close_seconds'])}",
                 f"Telegram seats: {summary.get('telegram_seats_claimed', summary['claimed_human_seats'])}/{summary.get('telegram_seats_total', summary['human_seats'])}",
                 f"LLM seats: {summary['llm_seats']}",
                 f"Joined users: {joined}",
@@ -870,9 +917,21 @@ class TelegramApp:
     def _parse_turn_timeout(raw: str) -> int | None | object:
         normalized = raw.strip().lower()
         if normalized in {"", "off", "default", "none"}:
-            return None
+            return _INVALID_TIMEOUT
         parsed = TelegramApp._parse_int(raw)
-        if parsed is None or parsed <= 0:
+        if parsed is None or not 1 <= parsed <= MAX_HUMAN_TURN_TIMEOUT_SECONDS:
+            return _INVALID_TIMEOUT
+        return parsed
+
+    @staticmethod
+    def _parse_idle_close_timeout(raw: str, *, minimum: int) -> int | object:
+        normalized = raw.strip().lower()
+        if normalized == "default":
+            return max(minimum, DEFAULT_HUMAN_IDLE_CLOSE_SECONDS)
+        if normalized in {"", "off", "none"}:
+            return _INVALID_TIMEOUT
+        parsed = TelegramApp._parse_int(raw)
+        if parsed is None or not minimum <= parsed <= MAX_HUMAN_IDLE_CLOSE_SECONDS:
             return _INVALID_TIMEOUT
         return parsed
 

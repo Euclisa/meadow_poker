@@ -193,6 +193,10 @@ class LLMPlayerAgent(PlayerAgent):
         self._pending_hand_summaries: list[str] = []
         self._reflection_note: str | None = None
 
+    @property
+    def keeps_table_alive(self) -> bool:
+        return False
+
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
         self._reset_history_if_needed(decision)
         prompt = self._build_prompt(decision)

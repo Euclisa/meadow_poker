@@ -28,6 +28,7 @@ class ManagedTableConfig:
     ante: int = 0
     starting_stack: int = 2_000
     turn_timeout_seconds: int | None = None
+    idle_close_seconds: int | None = None
     max_hands_per_table: int | None = None
     max_players: int = 6
     human_transport: str = "web"

@@ -41,7 +41,8 @@ async def complete_create_flow(
     small_blind: str = "default",
     ante: str = "default",
     starting_stack: str = "default",
-    turn_timeout: str = "default",
+    turn_timeout: str = "30",
+    idle_close: str = "300",
 ) -> None:
     await app.handle_create_table_command(user_id=user_id, chat_id=chat_id)
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=total_seats)
@@ -51,6 +52,7 @@ async def complete_create_flow(
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=ante)
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=starting_stack)
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=turn_timeout)
+    await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=idle_close)
 
 
 def test_remote_telegram_create_join_and_start_use_backend_state_for_keyboards() -> None:
@@ -61,6 +63,8 @@ def test_remote_telegram_create_join_and_start_use_backend_state_for_keyboards()
 
         created_messages = [item for item in messages if "Created table" in item[1]]
         assert created_messages
+        assert "Turn timer: 30s" in created_messages[-1][1]
+        assert "Idle close: 300s" in created_messages[-1][1]
         assert created_messages[-1][2] == [["My Table"], ["Start Game"], ["Cancel Table"], ["Help"]]
 
         table_id = created_messages[-1][1].split()[2].rstrip(".")
@@ -73,6 +77,25 @@ def test_remote_telegram_create_join_and_start_use_backend_state_for_keyboards()
         joiner_messages = [(text, markup) for chat_id, text, markup in messages if chat_id == 202]
         assert any("joined table" in text.lower() or "ready to start" in text.lower() for text, _markup in joiner_messages)
         assert any(markup == [["My Table"], ["Leave Table"], ["Help"]] for _text, markup in joiner_messages)
+
+    asyncio.run(scenario())
+
+
+def test_remote_telegram_create_flow_rejects_disabled_turn_timer_text() -> None:
+    async def scenario() -> None:
+        service = make_backend_service()
+        app, messages = make_remote_app(make_http_backend_client(service))
+
+        await app.handle_create_table_command(user_id=1, chat_id=101)
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="off")
+
+        assert "Enter a turn timer between 1 and 180 seconds." in messages[-1][1]
 
     asyncio.run(scenario())
 

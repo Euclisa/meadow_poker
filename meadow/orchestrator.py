@@ -31,6 +31,10 @@ from meadow.types import (
 logger = logging.getLogger(__name__)
 
 
+class IdleTableTimeoutError(asyncio.TimeoutError):
+    pass
+
+
 @dataclass(slots=True)
 class _PendingSeatState:
     validation_error: ActionValidationError | None = None
@@ -80,14 +84,18 @@ class GameOrchestrator:
         player_agents: dict[str, PlayerAgent],
         *,
         turn_timeout_seconds: int | None = None,
+        idle_close_seconds: int | None = None,
         on_turn_state_changed: Callable[[], Awaitable[None]] | None = None,
         on_turn_timeout: Callable[[DecisionRequest, PlayerAction], Awaitable[None]] | None = None,
     ) -> None:
         if turn_timeout_seconds is not None and turn_timeout_seconds <= 0:
             raise ValueError("turn_timeout_seconds must be positive when set")
+        if idle_close_seconds is not None and idle_close_seconds <= 0:
+            raise ValueError("idle_close_seconds must be positive when set")
         self.engine = engine
         self.player_agents = player_agents
         self.turn_timeout_seconds = turn_timeout_seconds
+        self.idle_close_seconds = idle_close_seconds
         self._on_turn_state_changed = on_turn_state_changed
         self._on_turn_timeout = on_turn_timeout
         self.event_log: list[GameEvent] = []
@@ -101,6 +109,7 @@ class GameOrchestrator:
         self._current_hand_ended_in_showdown = False
         self._current_hand_trace: _CurrentHandTraceState | None = None
         self._turn_timer: ActiveTurnTimer | None = None
+        self._last_keepalive_activity_monotonic: float | None = None
 
         for seat_id in player_agents:
             engine.get_player_view(seat_id)
@@ -161,6 +170,7 @@ class GameOrchestrator:
                 events=tuple(self.event_log[start_index:]),
             )
         self._begin_current_hand(start_index, initial_events=start_result.events)
+        self._initialize_keepalive_deadline_if_needed()
         opening_events = list(start_result.events)
         opening_events.extend(self._record_automatic_progress())
         self._append_events(tuple(opening_events))
@@ -230,6 +240,12 @@ class GameOrchestrator:
             await self._ensure_turn_timer(acting_seat)
             try:
                 action = await self._request_action(agent, decision)
+            except IdleTableTimeoutError:
+                await self.complete_table(
+                    reason="idle_timeout",
+                    hand_number=decision.public_table_view.hand_number,
+                )
+                return
             except asyncio.CancelledError as exc:
                 if asyncio.current_task() is not None and asyncio.current_task().cancelling():
                     raise
@@ -275,6 +291,8 @@ class GameOrchestrator:
                 logger.warning("Invalid action from seat=%s error=%s", acting_seat, result.error)
                 continue
             await self._clear_turn_timer()
+            if agent.keeps_table_alive:
+                self._last_keepalive_activity_monotonic = time.monotonic()
             self._record_action_transition(acting_seat, action, result.events)
             action_events = list(result.events)
             action_events.extend(self._record_automatic_progress())
@@ -412,12 +430,24 @@ class GameOrchestrator:
         return tuple(recorded_events)
 
     async def _request_action(self, agent: PlayerAgent, decision: DecisionRequest) -> PlayerAction:
-        if self.turn_timeout_seconds is None:
+        if self.turn_timeout_seconds is None and self.idle_close_seconds is None:
             return await agent.request_action(decision)
-        remaining = self._remaining_turn_seconds()
-        if remaining is not None and remaining <= 0:
+        turn_remaining = self._remaining_turn_seconds()
+        idle_remaining = self._remaining_keepalive_seconds()
+        if idle_remaining is not None and idle_remaining <= 0:
+            raise IdleTableTimeoutError
+        if turn_remaining is not None and turn_remaining <= 0:
             raise asyncio.TimeoutError
-        return await asyncio.wait_for(agent.request_action(decision), timeout=remaining)
+        timeout_candidates = [remaining for remaining in (turn_remaining, idle_remaining) if remaining is not None]
+        if not timeout_candidates:
+            return await agent.request_action(decision)
+        try:
+            return await asyncio.wait_for(agent.request_action(decision), timeout=min(timeout_candidates))
+        except asyncio.TimeoutError as exc:
+            idle_remaining = self._remaining_keepalive_seconds()
+            if idle_remaining is not None and idle_remaining <= 0:
+                raise IdleTableTimeoutError from exc
+            raise
 
     async def _ensure_turn_timer(self, seat_id: str) -> None:
         if self.turn_timeout_seconds is None:
@@ -446,3 +476,14 @@ class GameOrchestrator:
         if self._turn_timer is None:
             return None
         return max(0.0, self._turn_timer.deadline_monotonic - time.monotonic())
+
+    def _remaining_keepalive_seconds(self) -> float | None:
+        if self.idle_close_seconds is None or self._last_keepalive_activity_monotonic is None:
+            return None
+        return max(0.0, (self._last_keepalive_activity_monotonic + self.idle_close_seconds) - time.monotonic())
+
+    def _initialize_keepalive_deadline_if_needed(self) -> None:
+        if self.idle_close_seconds is None or self._last_keepalive_activity_monotonic is not None:
+            return
+        if any(agent.keeps_table_alive for agent in self.player_agents.values()):
+            self._last_keepalive_activity_monotonic = time.monotonic()

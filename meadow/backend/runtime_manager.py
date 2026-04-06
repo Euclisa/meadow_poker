@@ -91,6 +91,7 @@ class BackendRuntimeManager:
             engine,
             player_agents,
             turn_timeout_seconds=runtime.config.turn_timeout_seconds,
+            idle_close_seconds=runtime.config.idle_close_seconds,
             on_turn_state_changed=publish_state,
             on_turn_timeout=handle_turn_timeout,
         )

@@ -9,7 +9,15 @@ import secrets
 from typing import Any
 
 from meadow.backend.models import ActorRef, ManagedTableConfig
-from meadow.backend.service import BackendError, LocalBackendClient, LocalTableBackendService
+from meadow.backend.service import (
+    BackendError,
+    DEFAULT_HUMAN_IDLE_CLOSE_SECONDS,
+    DEFAULT_HUMAN_TURN_TIMEOUT_SECONDS,
+    LocalBackendClient,
+    LocalTableBackendService,
+    MAX_HUMAN_IDLE_CLOSE_SECONDS,
+    MAX_HUMAN_TURN_TIMEOUT_SECONDS,
+)
 from meadow.config import CoachSettings, LLMSettings
 from meadow.naming import BotNameAllocator
 from meadow.llm_bot import LLMGameClient
@@ -149,6 +157,7 @@ class WebApp:
         if ante is None and payload.get("ante") is None:
             ante = max(0, self.config.ante)
         turn_timeout_seconds = self._parse_int(payload.get("turn_timeout_seconds"))
+        idle_close_seconds = self._parse_int(payload.get("idle_close_seconds"))
         self._validate_table_request(
             total_seats=total_seats,
             llm_seat_count=llm_seat_count,
@@ -156,6 +165,7 @@ class WebApp:
             stack_depth=stack_depth,
             ante=ante,
             turn_timeout_seconds=turn_timeout_seconds,
+            idle_close_seconds=idle_close_seconds,
         )
         assert total_seats is not None
         assert llm_seat_count is not None
@@ -174,6 +184,7 @@ class WebApp:
                     ante=ante,
                     starting_stack=big_blind * stack_depth,
                     turn_timeout_seconds=turn_timeout_seconds,
+                    idle_close_seconds=idle_close_seconds,
                     max_hands_per_table=self.config.max_hands_per_table,
                     max_players=self.config.max_players,
                     human_transport="web",
@@ -416,7 +427,8 @@ class WebApp:
             "ante": max(0, self.config.ante),
             "starting_stack": default_big_blind * default_stack_depth,
             "stack_depth": default_stack_depth,
-            "turn_timeout_seconds": None,
+            "turn_timeout_seconds": DEFAULT_HUMAN_TURN_TIMEOUT_SECONDS,
+            "idle_close_seconds": DEFAULT_HUMAN_IDLE_CLOSE_SECONDS,
             "big_blind_presets": list(big_blind_presets),
             "stack_depth_presets": list(stack_depth_presets),
             "ante_presets": list(self._ante_presets()),
@@ -461,6 +473,7 @@ class WebApp:
         stack_depth: int | None,
         ante: int | None,
         turn_timeout_seconds: int | None,
+        idle_close_seconds: int | None,
     ) -> None:
         if total_seats is None or not 2 <= total_seats <= self.config.max_players:
             raise self._require_aiohttp().HTTPBadRequest(
@@ -482,9 +495,23 @@ class WebApp:
             raise self._require_aiohttp().HTTPBadRequest(
                 text="ante must be a non-negative integer."
             )
-        if turn_timeout_seconds is not None and turn_timeout_seconds <= 0:
+        if turn_timeout_seconds is None:
             raise self._require_aiohttp().HTTPBadRequest(
-                text="turn_timeout_seconds must be positive when set."
+                text=(
+                    "turn_timeout_seconds is required for human tables and must be "
+                    f"between 1 and {MAX_HUMAN_TURN_TIMEOUT_SECONDS} seconds."
+                )
+            )
+        if not 1 <= turn_timeout_seconds <= MAX_HUMAN_TURN_TIMEOUT_SECONDS:
+            raise self._require_aiohttp().HTTPBadRequest(
+                text=f"turn_timeout_seconds must be between 1 and {MAX_HUMAN_TURN_TIMEOUT_SECONDS} seconds."
+            )
+        if idle_close_seconds is not None and not turn_timeout_seconds <= idle_close_seconds <= MAX_HUMAN_IDLE_CLOSE_SECONDS:
+            raise self._require_aiohttp().HTTPBadRequest(
+                text=(
+                    "idle_close_seconds must be at least turn_timeout_seconds and at most "
+                    f"{MAX_HUMAN_IDLE_CLOSE_SECONDS} seconds."
+                )
             )
 
     def _build_local_backend(self) -> LocalBackendClient:

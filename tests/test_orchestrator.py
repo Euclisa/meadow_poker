@@ -21,14 +21,19 @@ from meadow.types import (
 
 
 class ScriptedAgent(PlayerAgent):
-    def __init__(self, seat_id: str, actions: list[PlayerAction]) -> None:
+    def __init__(self, seat_id: str, actions: list[PlayerAction], *, keeps_table_alive: bool = True) -> None:
         self.seat_id = seat_id
         self._actions = list(actions)
+        self._keeps_table_alive = keeps_table_alive
         self.decisions: list[DecisionRequest] = []
         self.update_counts_at_decision: list[int] = []
         self.updates: list[PlayerUpdate] = []
         self.completed_hand_records: list[tuple] = []
         self.closed = False
+
+    @property
+    def keeps_table_alive(self) -> bool:
+        return self._keeps_table_alive
 
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
         self.decisions.append(decision)
@@ -63,8 +68,16 @@ class InspectingScriptedAgent(ScriptedAgent):
 
 
 class SlowScriptedAgent(ScriptedAgent):
-    def __init__(self, seat_id: str, actions: list[PlayerAction], *, slow_indices: set[int], delay_seconds: float) -> None:
-        super().__init__(seat_id, actions)
+    def __init__(
+        self,
+        seat_id: str,
+        actions: list[PlayerAction],
+        *,
+        slow_indices: set[int],
+        delay_seconds: float,
+        keeps_table_alive: bool = True,
+    ) -> None:
+        super().__init__(seat_id, actions, keeps_table_alive=keeps_table_alive)
         self._slow_indices = slow_indices
         self._delay_seconds = delay_seconds
 
@@ -93,10 +106,15 @@ class TimerInspectingAgent(ScriptedAgent):
 
 
 class RaisingAgent(PlayerAgent):
-    def __init__(self, seat_id: str, *, exc: Exception) -> None:
+    def __init__(self, seat_id: str, *, exc: Exception, keeps_table_alive: bool = True) -> None:
         self.seat_id = seat_id
         self.exc = exc
+        self._keeps_table_alive = keeps_table_alive
         self.updates: list[PlayerUpdate] = []
+
+    @property
+    def keeps_table_alive(self) -> bool:
+        return self._keeps_table_alive
 
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
         raise self.exc
@@ -423,8 +441,9 @@ def test_orchestrator_timeout_falls_back_to_fold_when_check_is_not_legal() -> No
         actions=[PlayerAction(ActionType.CALL)],
         slow_indices={0},
         delay_seconds=0.05,
+        keeps_table_alive=False,
     )
-    agent_two = ScriptedAgent("p2", actions=[])
+    agent_two = ScriptedAgent("p2", actions=[], keeps_table_alive=False)
     orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
     orchestrator.turn_timeout_seconds = 0.01
 
@@ -445,6 +464,7 @@ def test_orchestrator_timeout_falls_back_to_check_when_available() -> None:
         ],
         slow_indices={1},
         delay_seconds=0.05,
+        keeps_table_alive=False,
     )
     agent_two = ScriptedAgent(
         "p2",
@@ -454,6 +474,7 @@ def test_orchestrator_timeout_falls_back_to_check_when_available() -> None:
             PlayerAction(ActionType.CHECK),
             PlayerAction(ActionType.CHECK),
         ],
+        keeps_table_alive=False,
     )
     orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
     orchestrator.turn_timeout_seconds = 0.01
@@ -534,3 +555,78 @@ def test_orchestrator_uses_shared_fallback_for_agent_errors() -> None:
     first_action = next(event for event in orchestrator.event_log if event.event_type == "action_applied")
     assert first_action.payload["seat_id"] == "p1"
     assert first_action.payload["action"] == "fold"
+
+
+def test_orchestrator_completes_table_when_human_turn_goes_idle() -> None:
+    agent_one = SlowScriptedAgent(
+        "p1",
+        actions=[PlayerAction(ActionType.CALL)],
+        slow_indices={0},
+        delay_seconds=0.05,
+        keeps_table_alive=True,
+    )
+    agent_two = ScriptedAgent("p2", actions=[], keeps_table_alive=False)
+    orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
+    orchestrator.turn_timeout_seconds = 0.02
+    orchestrator.idle_close_seconds = 0.02
+
+    asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
+
+    table_completed = [event for event in orchestrator.event_log if event.event_type == "table_completed"]
+    assert table_completed
+    assert table_completed[-1].payload["reason"] == "idle_timeout"
+    assert all(event.event_type != "action_applied" for event in orchestrator.event_log)
+    assert any(update.update_type == PlayerUpdateType.TABLE_COMPLETED for update in agent_one.updates)
+    assert any(update.update_type == PlayerUpdateType.TABLE_COMPLETED for update in agent_two.updates)
+
+
+def test_orchestrator_invalid_human_action_does_not_refresh_idle_deadline() -> None:
+    agent_one = SlowScriptedAgent(
+        "p1",
+        actions=[
+            PlayerAction(ActionType.BET, amount=300),
+            PlayerAction(ActionType.CALL),
+        ],
+        slow_indices={1},
+        delay_seconds=0.05,
+        keeps_table_alive=True,
+    )
+    agent_two = ScriptedAgent("p2", actions=[], keeps_table_alive=False)
+    orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
+    orchestrator.turn_timeout_seconds = 0.02
+    orchestrator.idle_close_seconds = 0.02
+
+    asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
+
+    assert len(agent_one.decisions) == 2
+    assert agent_one.decisions[1].validation_error is not None
+    assert agent_one.decisions[1].validation_error.code == "illegal_action"
+    table_completed = [event for event in orchestrator.event_log if event.event_type == "table_completed"]
+    assert table_completed[-1].payload["reason"] == "idle_timeout"
+    assert all(event.event_type != "action_applied" for event in orchestrator.event_log)
+
+
+def test_orchestrator_bot_turn_does_not_keep_table_alive_after_human_action() -> None:
+    agent_one = ScriptedAgent(
+        "p1",
+        actions=[PlayerAction(ActionType.CALL)],
+        keeps_table_alive=True,
+    )
+    agent_two = SlowScriptedAgent(
+        "p2",
+        actions=[PlayerAction(ActionType.CHECK)],
+        slow_indices={0},
+        delay_seconds=0.05,
+        keeps_table_alive=False,
+    )
+    orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
+    orchestrator.turn_timeout_seconds = 0.02
+    orchestrator.idle_close_seconds = 0.02
+
+    asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
+
+    action_events = [event for event in orchestrator.event_log if event.event_type == "action_applied"]
+    assert len(action_events) == 1
+    assert action_events[0].payload["seat_id"] == "p1"
+    table_completed = [event for event in orchestrator.event_log if event.event_type == "table_completed"]
+    assert table_completed[-1].payload["reason"] == "idle_timeout"

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 from meadow.config import CoachSettings, LLMSettings
 from meadow.web_app.app import WebApp, WebAppConfig
 
@@ -113,6 +115,8 @@ def test_remote_web_lobby_sse_updates_after_table_create() -> None:
                         "llm_seat_count": 1,
                         "big_blind": 100,
                         "stack_depth": 20,
+                        "turn_timeout_seconds": 30,
+                        "idle_close_seconds": 300,
                     }
                 )
             )
@@ -140,6 +144,8 @@ def test_remote_web_table_flow_exposes_safe_public_running_snapshot() -> None:
                     "llm_seat_count": 0,
                     "big_blind": 100,
                     "stack_depth": 20,
+                    "turn_timeout_seconds": 30,
+                    "idle_close_seconds": 300,
                 }
             )
         )
@@ -201,5 +207,75 @@ def test_remote_web_table_flow_exposes_safe_public_running_snapshot() -> None:
         completed_snapshot = decode_json_response(completed_state)
         assert completed_snapshot["status"] == "completed"
         assert completed_snapshot["completed_hands"][0]["hand_number"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_remote_web_create_table_requires_turn_timeout_for_human_tables() -> None:
+    async def scenario() -> None:
+        service = make_backend_service()
+        app = make_remote_web_app(make_http_backend_client(service))
+
+        with pytest.raises(app._require_aiohttp().HTTPBadRequest) as exc_info:
+            await app.handle_create_table(
+                FakeRequest(
+                    payload={
+                        "display_name": "Alice",
+                        "total_seats": 2,
+                        "llm_seat_count": 1,
+                        "big_blind": 100,
+                        "stack_depth": 20,
+                    }
+                )
+            )
+        assert "turn_timeout_seconds is required" in exc_info.value.text
+
+    asyncio.run(scenario())
+
+
+def test_remote_web_create_table_rejects_turn_timeout_above_max() -> None:
+    async def scenario() -> None:
+        service = make_backend_service()
+        app = make_remote_web_app(make_http_backend_client(service))
+
+        with pytest.raises(app._require_aiohttp().HTTPBadRequest) as exc_info:
+            await app.handle_create_table(
+                FakeRequest(
+                    payload={
+                        "display_name": "Alice",
+                        "total_seats": 2,
+                        "llm_seat_count": 1,
+                        "big_blind": 100,
+                        "stack_depth": 20,
+                        "turn_timeout_seconds": 181,
+                        "idle_close_seconds": 300,
+                    }
+                )
+            )
+        assert "between 1 and 180 seconds" in exc_info.value.text
+
+    asyncio.run(scenario())
+
+
+def test_remote_web_create_table_rejects_idle_close_shorter_than_turn_timeout() -> None:
+    async def scenario() -> None:
+        service = make_backend_service()
+        app = make_remote_web_app(make_http_backend_client(service))
+
+        with pytest.raises(app._require_aiohttp().HTTPBadRequest) as exc_info:
+            await app.handle_create_table(
+                FakeRequest(
+                    payload={
+                        "display_name": "Alice",
+                        "total_seats": 2,
+                        "llm_seat_count": 1,
+                        "big_blind": 100,
+                        "stack_depth": 20,
+                        "turn_timeout_seconds": 60,
+                        "idle_close_seconds": 30,
+                    }
+                )
+            )
+        assert "idle_close_seconds must be at least turn_timeout_seconds" in exc_info.value.text
 
     asyncio.run(scenario())

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from dataclasses import replace
 import secrets
 from typing import Any, Awaitable, Callable
 
@@ -30,6 +31,11 @@ from meadow.types import (
     PlayerAction,
     TelegramTableState,
 )
+
+DEFAULT_HUMAN_TURN_TIMEOUT_SECONDS = 30
+MAX_HUMAN_TURN_TIMEOUT_SECONDS = 180
+DEFAULT_HUMAN_IDLE_CLOSE_SECONDS = 300
+MAX_HUMAN_IDLE_CLOSE_SECONDS = 1800
 
 
 class LocalTableBackendService:
@@ -88,6 +94,7 @@ class LocalTableBackendService:
         }
 
     async def create_table(self, actor: ActorRef, table_config: ManagedTableConfig) -> dict[str, Any]:
+        table_config = self._normalize_table_config(table_config)
         self._validate_table_config(table_config)
         table_id = self._generate_table_id()
         viewer_token = self._generate_viewer_token()
@@ -328,6 +335,7 @@ class LocalTableBackendService:
                         "ante": runtime.config.ante,
                         "starting_stack": runtime.config.starting_stack,
                         "turn_timeout_seconds": runtime.config.turn_timeout_seconds,
+                        "idle_close_seconds": runtime.config.idle_close_seconds,
                     },
                 }
             )
@@ -359,8 +367,46 @@ class LocalTableBackendService:
             raise BackendError(f"total_seats must be between 2 and {config.max_players}.", status=400)
         if not 0 <= config.llm_seat_count <= config.total_seats:
             raise BackendError(f"llm_seat_count must be between 0 and {config.total_seats}.", status=400)
+        if config.human_seat_count > 0:
+            if config.turn_timeout_seconds is None:
+                raise BackendError(
+                    (
+                        "turn_timeout_seconds is required for tables with human seats and must be "
+                        f"between 1 and {MAX_HUMAN_TURN_TIMEOUT_SECONDS} seconds."
+                    ),
+                    status=400,
+                )
+            if not 1 <= config.turn_timeout_seconds <= MAX_HUMAN_TURN_TIMEOUT_SECONDS:
+                raise BackendError(
+                    f"turn_timeout_seconds must be between 1 and {MAX_HUMAN_TURN_TIMEOUT_SECONDS} seconds.",
+                    status=400,
+                )
+            if config.idle_close_seconds is None:
+                raise BackendError(
+                    (
+                        "idle_close_seconds is required for tables with human seats and must be "
+                        f"between {config.turn_timeout_seconds} and {MAX_HUMAN_IDLE_CLOSE_SECONDS} seconds."
+                    ),
+                    status=400,
+                )
+            if not config.turn_timeout_seconds <= config.idle_close_seconds <= MAX_HUMAN_IDLE_CLOSE_SECONDS:
+                raise BackendError(
+                    (
+                        "idle_close_seconds must be at least turn_timeout_seconds and at most "
+                        f"{MAX_HUMAN_IDLE_CLOSE_SECONDS} seconds."
+                    ),
+                    status=400,
+                )
+            return
         if config.turn_timeout_seconds is not None and config.turn_timeout_seconds <= 0:
             raise BackendError("turn_timeout_seconds must be positive when set.", status=400)
+        if config.idle_close_seconds is not None and config.idle_close_seconds <= 0:
+            raise BackendError("idle_close_seconds must be positive when set.", status=400)
+
+    def _normalize_table_config(self, config: ManagedTableConfig) -> ManagedTableConfig:
+        if config.human_seat_count <= 0 or config.idle_close_seconds is not None:
+            return config
+        return replace(config, idle_close_seconds=DEFAULT_HUMAN_IDLE_CLOSE_SECONDS)
 
     def _waiting_message(self, runtime: BackendTableRuntime) -> str:
         if runtime.human_seat_count == 0:

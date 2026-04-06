@@ -8,6 +8,10 @@ from meadow.types import DecisionRequest, HandRecord, PlayerAction, PlayerUpdate
 class PlayerAgent(ABC):
     seat_id: str
 
+    @property
+    def keeps_table_alive(self) -> bool:
+        return True
+
     @abstractmethod
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
         raise NotImplementedError

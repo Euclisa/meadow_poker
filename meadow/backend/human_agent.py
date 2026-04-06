@@ -26,6 +26,10 @@ class BackendHumanAgent(PlayerAgent):
         self._pending_future: asyncio.Future[PlayerAction] | None = None
 
     @property
+    def keeps_table_alive(self) -> bool:
+        return True
+
+    @property
     def pending_decision(self) -> DecisionRequest | None:
         if self._pending_state is None:
             return None

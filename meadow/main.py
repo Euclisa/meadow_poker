@@ -8,7 +8,14 @@ import logging
 from meadow.backend.http import HttpBackendClient, create_backend_http_app
 from meadow.backend.models import ActorRef, ManagedTableConfig
 from meadow.backend.serialization import game_event_from_dict, snapshot_pending_decision, snapshot_player_view, snapshot_public_table_view
-from meadow.backend.service import LocalBackendClient, LocalTableBackendService
+from meadow.backend.service import (
+    DEFAULT_HUMAN_IDLE_CLOSE_SECONDS,
+    DEFAULT_HUMAN_TURN_TIMEOUT_SECONDS,
+    LocalBackendClient,
+    LocalTableBackendService,
+    MAX_HUMAN_IDLE_CLOSE_SECONDS,
+    MAX_HUMAN_TURN_TIMEOUT_SECONDS,
+)
 from meadow.config import DEFAULT_CONFIG_PATH, LLMSettings, ProjectConfig, load_project_config
 from meadow.logging_utils import configure_logging
 from meadow.naming import BotNameAllocator
@@ -46,7 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
     cli_parser.add_argument("--small-blind", type=int, default=None, help="Small blind amount. Defaults to half of --big-blind.")
     cli_parser.add_argument("--starting-stack", type=int, default=None, help="Starting stack size. Defaults to 20 times --big-blind.")
     cli_parser.add_argument("--ante", type=int, default=0, help="Per-player ante amount. Defaults to 0.")
-    cli_parser.add_argument("--turn-timeout", type=int, default=None, help="Optional per-turn timeout in seconds. Omit to disable.")
+    cli_parser.add_argument("--turn-timeout", type=int, default=None, help="Optional per-turn timeout in seconds. Omit to use the human-table default.")
+    cli_parser.add_argument("--idle-close", type=int, default=None, help="Optional idle-close timeout in seconds. Omit to use the human-table default.")
 
     subparsers.add_parser("telegram", help="Run the Telegram bot")
     subparsers.add_parser("web", help="Run the web lobby and table UI")
@@ -65,6 +73,7 @@ async def run_cli_mode(
     starting_stack: int | None = None,
     ante: int = 0,
     turn_timeout: int | None = None,
+    idle_close: int | None = None,
 ) -> None:
     player_entries = [item.strip() for item in players_spec.split(",") if item.strip()]
     if len(player_entries) < 2:
@@ -77,11 +86,27 @@ async def run_cli_mode(
         raise ValueError("CLI ante must be non-negative.")
     if turn_timeout is not None and turn_timeout <= 0:
         raise ValueError("CLI turn timeout must be positive when set.")
+    if idle_close is not None and idle_close <= 0:
+        raise ValueError("CLI idle-close timeout must be positive when set.")
     _validate_cli_players(player_entries, config.llm)
 
     backend = _build_backend_client(config)
     llm_seat_count = sum(1 for entry in player_entries if entry.casefold() == "bot")
     human_names = [entry for entry in player_entries if entry.casefold() != "bot"]
+    if human_names and turn_timeout is None:
+        turn_timeout = DEFAULT_HUMAN_TURN_TIMEOUT_SECONDS
+    if human_names and idle_close is None:
+        idle_close = DEFAULT_HUMAN_IDLE_CLOSE_SECONDS
+    if human_names and turn_timeout is not None and turn_timeout > MAX_HUMAN_TURN_TIMEOUT_SECONDS:
+        raise ValueError(
+            f"CLI turn timeout must be between 1 and {MAX_HUMAN_TURN_TIMEOUT_SECONDS} seconds for human tables."
+        )
+    if human_names and idle_close is not None and idle_close > MAX_HUMAN_IDLE_CLOSE_SECONDS:
+        raise ValueError(
+            f"CLI idle-close timeout must be between {turn_timeout} and {MAX_HUMAN_IDLE_CLOSE_SECONDS} seconds for human tables."
+        )
+    if human_names and turn_timeout is not None and idle_close is not None and idle_close < turn_timeout:
+        raise ValueError("CLI idle-close timeout must be at least the turn timeout for human tables.")
     creator_actor = ActorRef(
         transport="cli",
         external_id="observer" if not human_names else "p1",
@@ -97,6 +122,7 @@ async def run_cli_mode(
             ante=ante,
             starting_stack=resolved_starting_stack,
             turn_timeout_seconds=turn_timeout,
+            idle_close_seconds=idle_close,
             max_hands_per_table=max_hands,
             max_players=config.game.max_players,
             human_transport="cli",
@@ -240,6 +266,7 @@ def main() -> None:
                 starting_stack=args.starting_stack,
                 ante=args.ante,
                 turn_timeout=args.turn_timeout,
+                idle_close=args.idle_close,
             )
         )
         return

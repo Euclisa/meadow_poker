@@ -93,6 +93,7 @@ def serialize_waiting_table(runtime: BackendTableRuntime) -> dict[str, Any]:
         "starting_stack": runtime.config.starting_stack,
         "stack_depth": runtime.config.stack_depth,
         "turn_timeout_seconds": runtime.config.turn_timeout_seconds,
+        "idle_close_seconds": runtime.config.idle_close_seconds,
         "waiting_players": [
             {
                 "display_name": reservation.actor.display_name,
@@ -152,6 +153,7 @@ def serialize_table_snapshot(
             "starting_stack": runtime.config.starting_stack,
             "stack_depth": runtime.config.stack_depth,
             "turn_timeout_seconds": runtime.config.turn_timeout_seconds,
+            "idle_close_seconds": runtime.config.idle_close_seconds,
             "max_players": runtime.config.max_players,
             "max_hands_per_table": runtime.config.max_hands_per_table,
             "share_path": f"/table/{runtime.table_id}",
@@ -228,6 +230,7 @@ def serialize_replay_snapshot(
             "starting_stack": runtime.config.starting_stack,
             "stack_depth": runtime.config.stack_depth,
             "turn_timeout_seconds": runtime.config.turn_timeout_seconds,
+            "idle_close_seconds": runtime.config.idle_close_seconds,
             "max_players": runtime.config.max_players,
             "max_hands_per_table": runtime.config.max_hands_per_table,
             "share_path": f"/table/{runtime.table_id}",
