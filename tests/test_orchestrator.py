@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from poker_bot.orchestrator import GameOrchestrator
+from poker_bot.orchestrator import GameOrchestrator, resolve_fallback_action
 from poker_bot.players.base import PlayerAgent
 from poker_bot.poker.decks import DeckSequenceFactory
 from poker_bot.poker.engine import PokerEngine
@@ -11,6 +11,7 @@ from poker_bot.types import (
     ActionType,
     DecisionRequest,
     HandRecordStatus,
+    LegalAction,
     PlayerAction,
     PlayerUpdate,
     PlayerUpdateType,
@@ -61,6 +62,52 @@ class InspectingScriptedAgent(ScriptedAgent):
         return await super().request_action(decision)
 
 
+class SlowScriptedAgent(ScriptedAgent):
+    def __init__(self, seat_id: str, actions: list[PlayerAction], *, slow_indices: set[int], delay_seconds: float) -> None:
+        super().__init__(seat_id, actions)
+        self._slow_indices = slow_indices
+        self._delay_seconds = delay_seconds
+
+    async def request_action(self, decision: DecisionRequest) -> PlayerAction:
+        decision_index = len(self.decisions)
+        if decision_index in self._slow_indices:
+            self.decisions.append(decision)
+            self.update_counts_at_decision.append(len(self.updates))
+            await asyncio.sleep(self._delay_seconds)
+            if not self._actions:
+                raise AssertionError(f"No scripted action left for {self.seat_id}")
+            return self._actions.pop(0)
+        return await super().request_action(decision)
+
+
+class TimerInspectingAgent(ScriptedAgent):
+    def __init__(self, seat_id: str, actions: list[PlayerAction]) -> None:
+        super().__init__(seat_id, actions)
+        self.orchestrator: GameOrchestrator | None = None
+        self.timer_starts: list[float | None] = []
+
+    async def request_action(self, decision: DecisionRequest) -> PlayerAction:
+        timer = self.orchestrator.current_turn_timer if self.orchestrator is not None else None
+        self.timer_starts.append(None if timer is None else timer.started_monotonic)
+        return await super().request_action(decision)
+
+
+class RaisingAgent(PlayerAgent):
+    def __init__(self, seat_id: str, *, exc: Exception) -> None:
+        self.seat_id = seat_id
+        self.exc = exc
+        self.updates: list[PlayerUpdate] = []
+
+    async def request_action(self, decision: DecisionRequest) -> PlayerAction:
+        raise self.exc
+
+    async def notify_update(self, update: PlayerUpdate) -> None:
+        self.updates.append(update)
+
+    async def close(self) -> None:
+        return None
+
+
 def make_heads_up_orchestrator(agent_one: ScriptedAgent, agent_two: ScriptedAgent) -> GameOrchestrator:
     deck = (
         "As",
@@ -81,7 +128,14 @@ def make_heads_up_orchestrator(agent_one: ScriptedAgent, agent_two: ScriptedAgen
     for agent in (agent_one, agent_two):
         if isinstance(agent, InspectingScriptedAgent):
             agent.orchestrator = orchestrator
+        if isinstance(agent, TimerInspectingAgent):
+            agent.orchestrator = orchestrator
     return orchestrator
+
+
+def test_resolve_fallback_action_prefers_check_then_fold() -> None:
+    assert resolve_fallback_action((LegalAction(ActionType.CHECK),)).action_type is ActionType.CHECK
+    assert resolve_fallback_action((LegalAction(ActionType.FOLD), LegalAction(ActionType.CALL))).action_type is ActionType.FOLD
 
 
 def test_orchestrator_only_prompts_acting_seat_and_delivers_event_deltas() -> None:
@@ -361,3 +415,122 @@ def test_orchestrator_stores_completed_hands_and_notifies_agents() -> None:
     assert agent_two.completed_hand_records[0][0] is record
     assert agent_one.completed_hand_records[0][1].seat_id == "p1"
     assert agent_two.completed_hand_records[0][1].seat_id == "p2"
+
+
+def test_orchestrator_timeout_falls_back_to_fold_when_check_is_not_legal() -> None:
+    agent_one = SlowScriptedAgent(
+        "p1",
+        actions=[PlayerAction(ActionType.CALL)],
+        slow_indices={0},
+        delay_seconds=0.05,
+    )
+    agent_two = ScriptedAgent("p2", actions=[])
+    orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
+    orchestrator.turn_timeout_seconds = 0.01
+
+    asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
+
+    first_action = next(event for event in orchestrator.event_log if event.event_type == "action_applied")
+    assert first_action.payload["seat_id"] == "p1"
+    assert first_action.payload["action"] == "fold"
+    assert orchestrator.current_turn_timer is None
+
+
+def test_orchestrator_timeout_falls_back_to_check_when_available() -> None:
+    agent_one = SlowScriptedAgent(
+        "p1",
+        actions=[
+            PlayerAction(ActionType.CALL),
+            PlayerAction(ActionType.CHECK),
+        ],
+        slow_indices={1},
+        delay_seconds=0.05,
+    )
+    agent_two = ScriptedAgent(
+        "p2",
+        actions=[
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+        ],
+    )
+    orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
+    orchestrator.turn_timeout_seconds = 0.01
+
+    asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
+
+    flop_action = next(
+        event for event in orchestrator.event_log
+        if event.event_type == "action_applied"
+        and event.payload["seat_id"] == "p1"
+        and event.payload["action"] == "check"
+    )
+    assert flop_action.payload["action"] == "check"
+    assert orchestrator.current_turn_timer is None
+
+
+def test_orchestrator_keeps_same_timer_deadline_after_invalid_action() -> None:
+    agent_one = TimerInspectingAgent(
+        "p1",
+        actions=[
+            PlayerAction(ActionType.BET, amount=300),
+            PlayerAction(ActionType.CALL),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+        ],
+    )
+    agent_two = ScriptedAgent(
+        "p2",
+        actions=[
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+            PlayerAction(ActionType.CHECK),
+        ],
+    )
+    orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
+    orchestrator.turn_timeout_seconds = 5
+
+    asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
+
+    assert len(agent_one.timer_starts) >= 2
+    assert agent_one.timer_starts[0] == agent_one.timer_starts[1]
+
+
+def test_orchestrator_clears_timer_after_pending_turn_resolves() -> None:
+    agent_one = SlowScriptedAgent(
+        "p1",
+        actions=[PlayerAction(ActionType.CALL)],
+        slow_indices={0},
+        delay_seconds=0.05,
+    )
+    agent_two = ScriptedAgent("p2", actions=[])
+    orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
+    orchestrator.turn_timeout_seconds = 0.02
+
+    async def scenario() -> None:
+        task = asyncio.create_task(orchestrator.play_hand())
+        await asyncio.sleep(0.005)
+        assert orchestrator.current_turn_timer is not None
+        await task
+        assert orchestrator.current_turn_timer is None
+
+    asyncio.run(scenario())
+
+
+def test_orchestrator_uses_shared_fallback_for_agent_errors() -> None:
+    engine = PokerEngine.create_table(
+        TableConfig(deck_factory=DeckSequenceFactory([("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc")])),
+        [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
+    )
+    agent_one = RaisingAgent("p1", exc=RuntimeError("boom"))
+    agent_two = ScriptedAgent("p2", actions=[])
+    orchestrator = GameOrchestrator(engine, {"p1": agent_one, "p2": agent_two})
+
+    asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
+
+    first_action = next(event for event in orchestrator.event_log if event.event_type == "action_applied")
+    assert first_action.payload["seat_id"] == "p1"
+    assert first_action.payload["action"] == "fold"

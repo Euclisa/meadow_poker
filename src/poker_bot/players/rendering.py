@@ -97,6 +97,8 @@ def render_telegram_status_panel(view: PlayerView) -> str:
 
 def render_telegram_turn_prompt(decision: DecisionRequest) -> str:
     lines = ["👉 <b>Your move.</b>"]
+    if decision.turn_timeout_seconds is not None:
+        lines.append(f"⏳ {decision.turn_timeout_seconds}s turn timer.")
     if decision.player_view.to_call > 0:
         lines.append(f"Call: <b>{decision.player_view.to_call}</b>")
     else:
@@ -150,9 +152,11 @@ def render_cli_turn_prompt(decision: DecisionRequest) -> str:
             else:
                 parts.append(f"[{shortcut}]{label[1:]} {action.min_amount}-{action.max_amount}")
         else:
-            parts.append(f"[{shortcut}]{label[1:]}")
+                parts.append(f"[{shortcut}]{label[1:]}")
     line = "  Actions: " + ", ".join(parts)
     lines = [line]
+    if decision.turn_timeout_seconds is not None:
+        lines.insert(0, f"  Turn timer: {decision.turn_timeout_seconds}s")
     if decision.validation_error is not None:
         lines.insert(0, f"  !! {decision.validation_error.message}")
     return "\n".join(lines)

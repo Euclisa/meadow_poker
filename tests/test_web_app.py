@@ -127,6 +127,7 @@ def test_web_app_lobby_stream_and_html_shell() -> None:
         assert initial_lobby["defaults"]["max_players"] == 6
         assert initial_lobby["defaults"]["big_blind"] == 100
         assert initial_lobby["defaults"]["stack_depth"] == 20
+        assert initial_lobby["defaults"]["turn_timeout_seconds"] is None
 
         queue = app.registry.subscribe_lobby()
         try:
@@ -161,6 +162,29 @@ def test_web_app_lobby_stream_and_html_shell() -> None:
     asyncio.run(scenario())
 
 
+def test_web_app_create_table_accepts_turn_timeout_and_exposes_timer_snapshot() -> None:
+    app = make_web_app()
+
+    async def scenario() -> None:
+        create_response = await app.handle_create_table(
+            FakeRequest(
+                payload={
+                    "display_name": "Alice",
+                    "total_seats": 2,
+                    "llm_seat_count": 0,
+                    "big_blind": 100,
+                    "stack_depth": 20,
+                    "turn_timeout_seconds": 15,
+                }
+            )
+        )
+        created = decode_json_response(create_response)
+        assert created["snapshot"]["config_summary"]["turn_timeout_seconds"] == 15
+        assert created["snapshot"]["turn_timer"]["enabled"] is False
+
+    asyncio.run(scenario())
+
+
 def test_web_app_two_player_table_invalid_action_then_fold_completion() -> None:
     app = make_web_app(max_hands=1)
 
@@ -173,6 +197,7 @@ def test_web_app_two_player_table_invalid_action_then_fold_completion() -> None:
                     "llm_seat_count": 0,
                     "big_blind": 100,
                     "stack_depth": 20,
+                    "turn_timeout_seconds": 15,
                 }
             )
         )
@@ -213,6 +238,8 @@ def test_web_app_two_player_table_invalid_action_then_fold_completion() -> None:
             creator_snapshot = decode_json_response(creator_state)
             assert creator_snapshot["controls"]["is_joined"] is True
             assert creator_snapshot["pending_decision"] is not None
+            assert creator_snapshot["turn_timer"]["enabled"] is True
+            assert creator_snapshot["turn_timer"]["seat_id"] == "web_1"
             assert creator_snapshot["player_view"]["seat_id"] == "web_1"
 
             invalid_response = await app.handle_submit_action(
@@ -1286,6 +1313,131 @@ def test_frontend_static_files_exist_and_include_core_hooks() -> None:
     assert ".playing-card" in (css_dir / "cards.css").read_text()
     assert "@media (max-width: 640px)" in (css_dir / "responsive.css").read_text()
     assert "table-seat__bet" in (css_dir / "table.css").read_text()
+    assert "table-seat__timer" in (css_dir / "table.css").read_text()
+
+
+def test_frontend_render_includes_turn_timer_bar_for_acting_seat() -> None:
+    snapshot = {
+        "status": "running",
+        "table_id": "abc123",
+        "replay": None,
+        "config_summary": {
+            "total_seats": 2,
+            "web_seats": 2,
+            "claimed_web_seats": 2,
+            "llm_seats": 0,
+            "small_blind": 50,
+            "big_blind": 100,
+            "starting_stack": 2000,
+            "stack_depth": 20,
+            "turn_timeout_seconds": 15,
+            "max_players": 2,
+            "max_hands_per_table": None,
+            "share_path": "/table/abc123",
+        },
+        "waiting_players": [],
+        "public_table": {
+            "hand_number": 1,
+            "phase": "preflop",
+            "board_cards": [],
+            "pot_total": 150,
+            "current_bet": 100,
+            "dealer_seat_id": "web_1",
+            "acting_seat_id": "web_1",
+            "small_blind": 50,
+            "big_blind": 100,
+            "seats": [
+                {
+                    "seat_id": "web_1",
+                    "name": "Alice",
+                    "stack": 1900,
+                    "contribution": 0,
+                    "street_contribution": 0,
+                    "folded": False,
+                    "all_in": False,
+                    "in_hand": True,
+                    "position": "dealer",
+                    "is_human": True,
+                    "is_viewer": True,
+                },
+                {
+                    "seat_id": "web_2",
+                    "name": "Bob",
+                    "stack": 1900,
+                    "contribution": 100,
+                    "street_contribution": 100,
+                    "folded": False,
+                    "all_in": False,
+                    "in_hand": True,
+                    "position": "big_blind",
+                    "is_human": True,
+                    "is_viewer": False,
+                },
+            ],
+        },
+        "player_view": {
+            "seat_id": "web_1",
+            "player_name": "Alice",
+            "hole_cards": ["As", "Kd"],
+            "stack": 1900,
+            "contribution": 0,
+            "position": "dealer",
+            "to_call": 100,
+        },
+        "pending_decision": {
+            "acting_seat_id": "web_1",
+            "to_call": 100,
+            "turn_timeout_seconds": 15,
+            "validation_error": None,
+            "legal_actions": [
+                {"action_type": "fold", "min_amount": None, "max_amount": None},
+                {"action_type": "call", "min_amount": None, "max_amount": None},
+                {"action_type": "raise", "min_amount": 200, "max_amount": 1900},
+            ],
+        },
+        "turn_timer": {
+            "enabled": True,
+            "seat_id": "web_1",
+            "duration_ms": 15000,
+            "deadline_epoch_ms": 1700000015000,
+            "server_now_epoch_ms": 1700000000000,
+        },
+        "seat_amount_badges": [],
+        "recent_events": [],
+        "completed_hands": [],
+        "controls": {
+            "seat_token_valid": True,
+            "viewer_name": "Alice",
+            "is_joined": True,
+            "is_creator": True,
+            "can_join": False,
+            "can_start": False,
+            "can_leave": False,
+            "can_cancel": False,
+            "can_act": True,
+            "can_request_coach": False,
+            "share_path": "/table/abc123",
+            "join_disabled_reason": None,
+        },
+        "message": "Table abc123 started.",
+        "showdown": None,
+    }
+
+    command = [
+        "node",
+        "--experimental-default-type=module",
+        "-e",
+        (
+            "import { renderStatusMarkup } from './src/poker_bot/web_app/static/js/table-render.js';"
+            "const snapshot = JSON.parse(process.argv[1]);"
+            "console.log(renderStatusMarkup(snapshot));"
+        ),
+        json.dumps(snapshot),
+    ]
+    result = subprocess.run(command, cwd=Path.cwd(), check=True, text=True, capture_output=True)
+
+    assert 'data-turn-timer' in result.stdout
+    assert 'table-seat__timer' in result.stdout
 
 
 async def _fetch_table_snapshot(app: WebApp, *, table_id: str, seat_token: str) -> dict:

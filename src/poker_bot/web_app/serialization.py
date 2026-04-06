@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from html import escape
+import time
 from typing import Any
 
 
@@ -40,6 +41,7 @@ def serialize_waiting_table(session: WebTableSession) -> dict[str, Any]:
         "big_blind": session.request.big_blind,
         "starting_stack": session.request.starting_stack,
         "stack_depth": session.request.stack_depth,
+        "turn_timeout_seconds": session.request.turn_timeout_seconds,
         "waiting_players": [
             {
                 "display_name": user.display_name,
@@ -92,6 +94,7 @@ def serialize_table_snapshot(
             "big_blind": big_blind,
             "starting_stack": starting_stack,
             "stack_depth": session.request.stack_depth,
+            "turn_timeout_seconds": session.request.turn_timeout_seconds,
             "max_players": max_players,
             "max_hands_per_table": max_hands_per_table,
             "share_path": f"/table/{session.table_id}",
@@ -107,6 +110,7 @@ def serialize_table_snapshot(
         "public_table": public_table,
         "player_view": player_view,
         "pending_decision": pending_decision,
+        "turn_timer": _serialize_turn_timer(session),
         "seat_amount_badges": _serialize_seat_amount_badges(public_view, session.showdown_state),
         "recent_events": _serialize_recent_events(session),
         "completed_hands": _serialize_completed_hands(session),
@@ -154,6 +158,7 @@ def serialize_replay_snapshot(
             "big_blind": session.request.big_blind,
             "starting_stack": session.request.starting_stack,
             "stack_depth": session.request.stack_depth,
+            "turn_timeout_seconds": session.request.turn_timeout_seconds,
             "max_players": session.total_seats,
             "max_hands_per_table": None,
             "share_path": f"/table/{session.table_id}",
@@ -162,6 +167,7 @@ def serialize_replay_snapshot(
         "public_table": public_table,
         "player_view": _serialize_player_view(frame.player_view) if frame.player_view is not None else None,
         "pending_decision": None,
+        "turn_timer": _empty_turn_timer(),
         "seat_amount_badges": _serialize_replay_seat_amount_badges(frame),
         "recent_events": _serialize_replay_events(frame),
         "completed_hands": _serialize_completed_hands(session),
@@ -551,6 +557,7 @@ def _serialize_decision(decision: DecisionRequest) -> dict[str, Any]:
     return {
         "acting_seat_id": decision.acting_seat_id,
         "to_call": decision.player_view.to_call,
+        "turn_timeout_seconds": decision.turn_timeout_seconds,
         "validation_error": (
             {
                 "code": decision.validation_error.code,
@@ -567,4 +574,28 @@ def _serialize_decision(decision: DecisionRequest) -> dict[str, Any]:
             }
             for item in decision.legal_actions
         ],
+    }
+
+
+def _serialize_turn_timer(session: WebTableSession) -> dict[str, Any]:
+    orchestrator = session.orchestrator
+    if orchestrator is None or orchestrator.current_turn_timer is None:
+        return _empty_turn_timer()
+    timer = orchestrator.current_turn_timer
+    return {
+        "enabled": True,
+        "seat_id": timer.seat_id,
+        "duration_ms": timer.duration_seconds * 1000,
+        "deadline_epoch_ms": timer.deadline_epoch_ms,
+        "server_now_epoch_ms": int(time.time() * 1000),
+    }
+
+
+def _empty_turn_timer() -> dict[str, Any]:
+    return {
+        "enabled": False,
+        "seat_id": None,
+        "duration_ms": None,
+        "deadline_epoch_ms": None,
+        "server_now_epoch_ms": int(time.time() * 1000),
     }

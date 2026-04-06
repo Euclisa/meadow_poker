@@ -16,6 +16,8 @@ from poker_bot.table_runner import run_table
 from poker_bot.telegram_app.registry import TelegramTableRegistry
 from poker_bot.telegram_app.session import TelegramTableSession
 from poker_bot.types import (
+    DecisionRequest,
+    PlayerAction,
     SeatConfig,
     TableConfig,
     TelegramTableCreateRequest,
@@ -23,6 +25,7 @@ from poker_bot.types import (
 )
 
 logger = logging.getLogger(__name__)
+_INVALID_TIMEOUT = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +48,9 @@ class _CreateTableFlowState:
     llm_seat_count: int | None = None
     big_blind: int | None = None
     small_blind: int | None = None
+    starting_stack: int | None = None
+    turn_timeout_seconds: int | None = None
+    turn_timeout_configured: bool = False
 
 
 class TelegramActionRouter:
@@ -511,24 +517,45 @@ class TelegramApp:
         assert flow.llm_seat_count is not None
         assert flow.big_blind is not None
         assert flow.small_blind is not None
-        starting_stack = self._parse_int_or_default(
-            text,
-            default=self._default_starting_stack(flow.big_blind),
-        )
-        if starting_stack is None or starting_stack <= 0:
+        if flow.starting_stack is None:
+            starting_stack = self._parse_int_or_default(
+                text,
+                default=self._default_starting_stack(flow.big_blind),
+            )
+            if starting_stack is None or starting_stack <= 0:
+                await self._send_message(
+                    chat_id,
+                    "Enter a valid positive starting stack, or type Default.",
+                    self._build_create_flow_keyboard(),
+                )
+                return
+            flow.starting_stack = starting_stack
             await self._send_message(
                 chat_id,
-                "Enter a valid positive starting stack, or type Default.",
+                "Enter turn timer in seconds, or type Off/Default to disable it.",
                 self._build_create_flow_keyboard(),
             )
             return
+
+        if not flow.turn_timeout_configured:
+            parsed_timeout = self._parse_turn_timeout(text)
+            if parsed_timeout is _INVALID_TIMEOUT:
+                await self._send_message(
+                    chat_id,
+                    "Enter a positive turn timer in seconds, or type Off/Default.",
+                    self._build_create_flow_keyboard(),
+                )
+                return
+            flow.turn_timeout_seconds = parsed_timeout
+            flow.turn_timeout_configured = True
 
         request = TelegramTableCreateRequest(
             total_seats=flow.total_seats,
             llm_seat_count=flow.llm_seat_count,
             small_blind=flow.small_blind,
             big_blind=flow.big_blind,
-            starting_stack=starting_stack,
+            starting_stack=flow.starting_stack,
+            turn_timeout_seconds=flow.turn_timeout_seconds,
         )
         try:
             session = self.registry.create_waiting_table(
@@ -581,6 +608,14 @@ class TelegramApp:
                 thought_logging=self.config.llm.thought_logging,
             )
 
+        async def handle_turn_timeout(decision: DecisionRequest, action: PlayerAction) -> None:
+            agent = player_agents.get(decision.acting_seat_id)
+            if not isinstance(agent, TelegramPlayerAgent):
+                return
+            await agent.send_private_message(
+                f"Time expired. Auto-{self._format_action_label(action)}."
+            )
+
         engine = PokerEngine.create_table(
             TableConfig(
                 small_blind=session.request.small_blind,
@@ -589,7 +624,12 @@ class TelegramApp:
             ),
             seat_configs,
         )
-        orchestrator = GameOrchestrator(engine, player_agents)
+        orchestrator = GameOrchestrator(
+            engine,
+            player_agents,
+            turn_timeout_seconds=session.request.turn_timeout_seconds,
+            on_turn_timeout=handle_turn_timeout,
+        )
         session.engine = engine
         session.player_agents = player_agents
         session.orchestrator = orchestrator
@@ -670,6 +710,7 @@ class TelegramApp:
             f"LLM seats: {session.llm_seat_count}",
             f"Blinds: {session.request.small_blind}/{session.request.big_blind}",
             f"Starting stack: {session.request.starting_stack}",
+            f"Turn timer: {self._format_turn_timeout(session.request.turn_timeout_seconds)}",
         ]
         if session.has_multiple_human_players:
             lines.append(f"Join with: /join {session.table_id}")
@@ -685,6 +726,7 @@ class TelegramApp:
             f"Telegram seats: {session.human_player_count}/{session.telegram_seat_count}.",
             f"Blinds: {session.request.small_blind}/{session.request.big_blind}.",
             f"Starting stack: {session.request.starting_stack}.",
+            f"Turn timer: {self._format_turn_timeout(session.request.turn_timeout_seconds)}.",
         ]
         if session.is_full():
             lines.append(self._format_ready_to_start_hint(session))
@@ -710,6 +752,7 @@ class TelegramApp:
                 f"Seats: {status.total_seats}",
                 f"Blinds: {status.small_blind}/{status.big_blind}",
                 f"Starting stack: {status.starting_stack}",
+                f"Turn timer: {self._format_turn_timeout(status.turn_timeout_seconds)}",
                 f"Telegram seats: {status.telegram_seats_claimed}/{status.telegram_seats_total}",
                 f"LLM seats: {status.llm_seat_count}",
                 f"Joined users: {', '.join(str(user_id) for user_id in status.joined_user_ids) or '-'}",
@@ -730,12 +773,30 @@ class TelegramApp:
         return TelegramApp._parse_int(raw)
 
     @staticmethod
+    def _parse_turn_timeout(raw: str) -> int | None | object:
+        normalized = raw.strip().lower()
+        if normalized in {"", "off", "default", "none"}:
+            return None
+        parsed = TelegramApp._parse_int(raw)
+        if parsed is None or parsed <= 0:
+            return _INVALID_TIMEOUT
+        return parsed
+
+    @staticmethod
     def _default_small_blind(big_blind: int) -> int:
         return max(1, big_blind // 2)
 
     @staticmethod
     def _default_starting_stack(big_blind: int) -> int:
         return max(1, big_blind * 20)
+
+    @staticmethod
+    def _format_turn_timeout(turn_timeout_seconds: int | None) -> str:
+        return "Off" if turn_timeout_seconds is None else f"{turn_timeout_seconds}s"
+
+    @staticmethod
+    def _format_action_label(action: PlayerAction) -> str:
+        return action.action_type.value if action.amount is None else f"{action.action_type.value} {action.amount}"
 
     def _match_lobby_command(self, text: str) -> Any | None:
         normalized = text.strip().lower()

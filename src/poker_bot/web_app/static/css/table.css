@@ -248,6 +248,31 @@
   background: rgba(198, 221, 235, 0.34);
 }
 
+.table-seat__timer {
+  position: relative;
+  z-index: 2;
+  margin-top: 0.28rem;
+  width: clamp(6.85rem, 8.7vw, 7.55rem);
+  height: 0.24rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.28);
+  box-shadow: inset 0 1px 1px rgba(33, 50, 41, 0.12);
+}
+
+.table-seat--viewer .table-seat__timer {
+  width: clamp(7.6rem, 9.7vw, 8.45rem);
+}
+
+.table-seat__timer-fill {
+  display: block;
+  width: 100%;
+  height: 100%;
+  transform-origin: left center;
+  background: linear-gradient(90deg, rgba(255, 214, 153, 0.95), rgba(242, 201, 194, 0.95));
+  box-shadow: 0 0 10px rgba(242, 201, 194, 0.4);
+}
+
 /* Cards peek out above the info chip */
 .table-seat__cards {
   display: flex;

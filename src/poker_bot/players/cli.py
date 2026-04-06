@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import builtins
+import sys
 from typing import Callable
 
 from poker_bot.players.base import PlayerAgent
@@ -25,6 +28,7 @@ class CLIPlayerAgent(PlayerAgent):
         self.seat_id = seat_id
         self._input = input_func or input
         self._output = output_func or print
+        self._uses_builtin_input = input_func is None or input_func is input or input_func is builtins.input
 
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
         self._output(render_cli_status(decision.player_view))
@@ -32,7 +36,7 @@ class CLIPlayerAgent(PlayerAgent):
 
         legal = {action.action_type.value: action for action in decision.legal_actions}
         while True:
-            raw = self._input("> ").strip().lower()
+            raw = (await self._read_text("> ")).strip().lower()
             resolved = _ACTION_SHORTCUTS.get(raw, raw.split()[0] if raw else "")
             if resolved not in legal:
                 choices = ", ".join(
@@ -42,7 +46,7 @@ class CLIPlayerAgent(PlayerAgent):
                 continue
             selected = legal[resolved]
             if selected.action_type in {ActionType.BET, ActionType.RAISE}:
-                amount = self._read_amount(selected)
+                amount = await self._read_amount(selected)
                 if amount is None:
                     continue
                 return PlayerAction(selected.action_type, amount=amount)
@@ -58,14 +62,14 @@ class CLIPlayerAgent(PlayerAgent):
     async def close(self) -> None:
         return None
 
-    def _read_amount(self, action: LegalAction) -> int | None:
+    async def _read_amount(self, action: LegalAction) -> int | None:
         lo = action.min_amount or 0
         hi = action.max_amount or 0
         if lo == hi:
             self._output(f"  All-in: {lo}")
             return lo
         prompt = f"  Amount ({lo}-{hi}): "
-        raw = self._input(prompt).strip()
+        raw = (await self._read_text(prompt)).strip()
         try:
             amount = int(raw)
         except ValueError:
@@ -79,4 +83,25 @@ class CLIPlayerAgent(PlayerAgent):
             return None
         return amount
 
+    async def _read_text(self, prompt: str) -> str:
+        if not self._uses_builtin_input:
+            return self._input(prompt)
+        return await self._read_stdin_line(prompt)
 
+    async def _read_stdin_line(self, prompt: str) -> str:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[str] = loop.create_future()
+        stream = sys.stdin
+        fileno = stream.fileno()
+        print(prompt, end="", flush=True)
+
+        def on_readable() -> None:
+            line = stream.readline()
+            if not future.done():
+                future.set_result(line)
+
+        loop.add_reader(fileno, on_readable)
+        try:
+            return await future
+        finally:
+            loop.remove_reader(fileno)

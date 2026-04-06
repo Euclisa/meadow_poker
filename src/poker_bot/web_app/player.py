@@ -50,6 +50,7 @@ class WebPlayerAgent(PlayerAgent):
             return await self._pending_future
         finally:
             self._pending_future = None
+            self._pending_state = None
 
     async def notify_update(self, update: PlayerUpdate) -> None:
         self._pending_state = None

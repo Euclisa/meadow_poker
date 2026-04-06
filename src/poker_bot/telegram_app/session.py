@@ -90,6 +90,7 @@ class TelegramTableSession:
             telegram_seats_claimed=len(self.claimed_telegram_users),
             llm_seat_count=self.llm_seat_count,
             joined_user_ids=tuple(user.user_id for user in self.claimed_telegram_users),
+            turn_timeout_seconds=self.request.turn_timeout_seconds,
         )
 
     def human_users(self) -> tuple[TelegramUserReservation, ...]:

@@ -156,11 +156,13 @@ class WebApp:
         llm_seat_count = self._parse_int(payload.get("llm_seat_count"))
         big_blind = self._parse_int(payload.get("big_blind"))
         stack_depth = self._parse_int(payload.get("stack_depth"))
+        turn_timeout_seconds = self._parse_int(payload.get("turn_timeout_seconds"))
         self._validate_table_request(
             total_seats=total_seats,
             llm_seat_count=llm_seat_count,
             big_blind=big_blind,
             stack_depth=stack_depth,
+            turn_timeout_seconds=turn_timeout_seconds,
         )
         assert total_seats is not None
         assert llm_seat_count is not None
@@ -174,6 +176,7 @@ class WebApp:
                 llm_seat_count=llm_seat_count,
                 big_blind=big_blind,
                 stack_depth=stack_depth,
+                turn_timeout_seconds=turn_timeout_seconds,
             ),
         )
         self._sync_waiting_message(session)
@@ -490,6 +493,15 @@ class WebApp:
         async def publish_state() -> None:
             await self._broadcast_session(session, include_lobby=False)
 
+        async def handle_turn_timeout(decision: Any, action: PlayerAction) -> None:
+            session.add_activity(
+                kind="state",
+                text=(
+                    f"{decision.player_view.player_name} timed out. "
+                    f"Auto-{self._format_action_label(action)}."
+                ),
+            )
+
         for user in session.claimed_web_users:
             seat_configs.append(SeatConfig(seat_id=user.seat_id, name=user.display_name))
             player_agents[user.seat_id] = WebPlayerAgent(
@@ -517,7 +529,13 @@ class WebApp:
             ),
             seat_configs,
         )
-        orchestrator = GameOrchestrator(engine, player_agents)
+        orchestrator = GameOrchestrator(
+            engine,
+            player_agents,
+            turn_timeout_seconds=session.request.turn_timeout_seconds,
+            on_turn_state_changed=publish_state,
+            on_turn_timeout=handle_turn_timeout,
+        )
         session.engine = engine
         session.player_agents = player_agents
         session.orchestrator = orchestrator
@@ -627,6 +645,7 @@ class WebApp:
             "big_blind": default_big_blind,
             "starting_stack": default_big_blind * default_stack_depth,
             "stack_depth": default_stack_depth,
+            "turn_timeout_seconds": None,
             "big_blind_presets": list(big_blind_presets),
             "stack_depth_presets": list(stack_depth_presets),
             "max_hands_per_table": self.config.max_hands_per_table,
@@ -709,6 +728,7 @@ class WebApp:
         llm_seat_count: int | None,
         big_blind: int | None,
         stack_depth: int | None,
+        turn_timeout_seconds: int | None,
     ) -> None:
         if total_seats is None or not 2 <= total_seats <= self.config.max_players:
             raise self._require_aiohttp().HTTPBadRequest(
@@ -725,6 +745,10 @@ class WebApp:
         if stack_depth is None or stack_depth not in self._stack_depth_presets():
             raise self._require_aiohttp().HTTPBadRequest(
                 text="stack_depth must match one of the supported stack presets."
+            )
+        if turn_timeout_seconds is not None and turn_timeout_seconds <= 0:
+            raise self._require_aiohttp().HTTPBadRequest(
+                text="turn_timeout_seconds must be positive when set."
             )
 
     def _big_blind_presets(self) -> tuple[int, ...]:
@@ -747,6 +771,10 @@ class WebApp:
 
     def _default_stack_depth(self, big_blind: int) -> int:
         return max(1, round(self.config.starting_stack / max(1, big_blind)))
+
+    @staticmethod
+    def _format_action_label(action: PlayerAction) -> str:
+        return action.action_type.value if action.amount is None else f"{action.action_type.value} {action.amount}"
 
     def _default_llm_client_factory(self) -> LLMGameClient:
         if self.config.llm.model is None or self.config.llm.api_key is None:

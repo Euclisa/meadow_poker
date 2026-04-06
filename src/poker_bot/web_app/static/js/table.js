@@ -30,6 +30,7 @@ const state = {
   coachAbortController: null,
   coachRequestToken: 0,
   coachTurnKey: "",
+  turnTimerFrame: null,
 };
 
 function setFlash(message, tone = "info") {
@@ -67,6 +68,7 @@ function render() {
     initialized = true;
     bindDelegatedEvents();
   }
+  syncTurnTimerAnimation();
 }
 
 function bindDelegatedEvents() {
@@ -315,6 +317,42 @@ function syncCoachStateAfterSnapshot() {
   if (!state.snapshot?.pending_decision) {
     cancelCoachRequest();
   }
+}
+
+function syncTurnTimerAnimation() {
+  if (state.turnTimerFrame != null) {
+    window.cancelAnimationFrame(state.turnTimerFrame);
+    state.turnTimerFrame = null;
+  }
+
+  const timerEl = document.querySelector("[data-turn-timer]");
+  const fillEl = timerEl?.querySelector(".table-seat__timer-fill");
+  if (!timerEl || !fillEl) {
+    return;
+  }
+
+  const deadlineEpochMs = Number(timerEl.dataset.deadlineEpochMs);
+  const durationMs = Number(timerEl.dataset.durationMs);
+  if (!Number.isFinite(deadlineEpochMs) || !Number.isFinite(durationMs) || durationMs <= 0) {
+    fillEl.style.transform = "scaleX(0)";
+    return;
+  }
+
+  const update = () => {
+    if (!document.body.contains(fillEl)) {
+      state.turnTimerFrame = null;
+      return;
+    }
+    const remainingMs = Math.max(0, deadlineEpochMs - Date.now());
+    fillEl.style.transform = `scaleX(${(remainingMs / durationMs).toFixed(4)})`;
+    if (remainingMs > 0) {
+      state.turnTimerFrame = window.requestAnimationFrame(update);
+      return;
+    }
+    state.turnTimerFrame = null;
+  };
+
+  update();
 }
 
 async function init() {

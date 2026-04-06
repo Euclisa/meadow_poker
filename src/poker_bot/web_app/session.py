@@ -16,6 +16,11 @@ class WebTableCreateRequest:
     llm_seat_count: int
     big_blind: int
     stack_depth: int
+    turn_timeout_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.turn_timeout_seconds is not None and self.turn_timeout_seconds <= 0:
+            raise ValueError("turn_timeout_seconds must be positive when set")
 
     @property
     def web_seat_count(self) -> int:

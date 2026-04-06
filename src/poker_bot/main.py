@@ -62,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Starting stack size. Defaults to 20 times --big-blind.",
     )
+    cli_parser.add_argument(
+        "--turn-timeout",
+        type=int,
+        default=None,
+        help="Optional per-turn timeout in seconds. Omit to disable.",
+    )
 
     subparsers.add_parser("telegram", help="Run the Telegram bot")
     subparsers.add_parser("web", help="Run the web lobby and table UI")
@@ -77,6 +83,7 @@ async def run_cli_mode(
     big_blind: int = 100,
     small_blind: int | None = None,
     starting_stack: int | None = None,
+    turn_timeout: int | None = None,
 ) -> None:
     player_entries = [item.strip() for item in players_spec.split(",") if item.strip()]
     if len(player_entries) < 2:
@@ -85,6 +92,8 @@ async def run_cli_mode(
         raise ValueError("CLI player count cannot exceed game.max_players from the config file.")
     resolved_small_blind = max(1, big_blind // 2) if small_blind is None else small_blind
     resolved_starting_stack = big_blind * 20 if starting_stack is None else starting_stack
+    if turn_timeout is not None and turn_timeout <= 0:
+        raise ValueError("CLI turn timeout must be positive when set.")
 
     seats: list[SeatConfig] = []
     agents = {}
@@ -119,7 +128,7 @@ async def run_cli_mode(
         ),
         seats,
     )
-    orchestrator = GameOrchestrator(engine, agents)
+    orchestrator = GameOrchestrator(engine, agents, turn_timeout_seconds=turn_timeout)
     await run_table(orchestrator, max_hands=max_hands)
 
 
@@ -175,6 +184,7 @@ def main() -> None:
                 big_blind=args.big_blind,
                 small_blind=args.small_blind,
                 starting_stack=args.starting_stack,
+                turn_timeout=args.turn_timeout,
             )
         )
         return

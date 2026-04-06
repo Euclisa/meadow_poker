@@ -126,6 +126,7 @@ function renderPlayWindow(snapshot, uiState) {
 function renderTableSurface(snapshot) {
   const publicTable = snapshot.public_table;
   const playerView = snapshot.player_view;
+  const turnTimer = snapshot.turn_timer;
   const orderedSeats = orderSeatsForDisplay(publicTable.seats, playerView?.seat_id ?? null);
   const showdown = snapshot.showdown;
   const revealedSeats = new Map((showdown?.revealed_seats ?? []).map((seat) => [seat.seat_id, seat]));
@@ -152,6 +153,7 @@ function renderTableSurface(snapshot) {
             displayIndex: index,
             reveal: revealedSeats.get(seat.seat_id) ?? null,
             seatAmountBadge: seatAmountBadges.get(seat.seat_id) ?? null,
+            turnTimer,
           }),
         )
         .join("")}
@@ -159,7 +161,7 @@ function renderTableSurface(snapshot) {
   `;
 }
 
-function renderSeatPanel({ seat, publicTable, playerView, seatCount, displayIndex, reveal, seatAmountBadge }) {
+function renderSeatPanel({ seat, publicTable, playerView, seatCount, displayIndex, reveal, seatAmountBadge, turnTimer }) {
   const isViewer = seat.is_viewer && playerView;
   const style = seatPositionStyle(displayIndex, seatCount);
   const status = seatStatusMeta(seat, publicTable.acting_seat_id);
@@ -174,6 +176,7 @@ function renderSeatPanel({ seat, publicTable, playerView, seatCount, displayInde
         ? `${renderCard("xx", { hidden: true })}${renderCard("xx", { hidden: true })}`
         : "";
   const amountBadgeMarkup = renderSeatAmountBadge(seatAmountBadge, { side: amountBadgeSide });
+  const timerMarkup = renderTurnTimerBar(turnTimer, seat.seat_id);
 
   return `
     <article
@@ -202,6 +205,7 @@ function renderSeatPanel({ seat, publicTable, playerView, seatCount, displayInde
           }
         </div>
       </div>
+      ${timerMarkup}
       ${amountBadgeMarkup}
     </article>
   `;
@@ -215,6 +219,21 @@ function renderSeatAmountBadge(seatAmountBadge, { side }) {
     <div class="table-seat__bet table-seat__bet--${side}">
       <span class="chip-icon" aria-hidden="true"></span>
       <span class="table-seat__bet-amount">${formatChips(seatAmountBadge.amount)}</span>
+    </div>
+  `;
+}
+
+function renderTurnTimerBar(turnTimer, seatId) {
+  if (!turnTimer?.enabled || turnTimer.seat_id !== seatId || turnTimer.duration_ms == null || turnTimer.deadline_epoch_ms == null) {
+    return "";
+  }
+  return `
+    <div
+      class="table-seat__timer"
+      data-turn-timer
+      data-deadline-epoch-ms="${escapeHtml(turnTimer.deadline_epoch_ms)}"
+      data-duration-ms="${escapeHtml(turnTimer.duration_ms)}">
+      <span class="table-seat__timer-fill"></span>
     </div>
   `;
 }

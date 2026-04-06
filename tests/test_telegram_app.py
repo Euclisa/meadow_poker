@@ -100,6 +100,7 @@ async def complete_create_flow(
     big_blind: str = "default",
     small_blind: str = "default",
     starting_stack: str = "default",
+    turn_timeout: str = "default",
 ) -> None:
     await app.handle_create_table_command(user_id=user_id, chat_id=chat_id)
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=total_seats)
@@ -107,6 +108,7 @@ async def complete_create_flow(
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=big_blind)
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=small_blind)
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=starting_stack)
+    await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=turn_timeout)
 
 
 def test_create_table_guided_flow_and_creator_autojoin() -> None:
@@ -363,6 +365,7 @@ def test_lobby_buttons_work_as_text_commands() -> None:
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="My Table")
 
     asyncio.run(scenario())
@@ -380,6 +383,7 @@ def test_help_works_during_create_flow() -> None:
         # Flow should still be active after help
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
@@ -447,3 +451,40 @@ def test_create_table_flow_accepts_custom_blinds_and_stack() -> None:
     texts = [text for _chat, text, _markup in messages]
     assert any("Blinds: 100/200" in text for text in texts)
     assert any("Starting stack: 8000" in text for text in texts)
+
+
+def test_create_table_flow_accepts_turn_timeout() -> None:
+    app, messages = make_app()
+
+    async def scenario() -> None:
+        await complete_create_flow(
+            app,
+            total_seats="2",
+            llm_seats="0",
+            turn_timeout="15",
+        )
+
+    asyncio.run(scenario())
+
+    table = app.registry.get_user_table(1)
+    assert table is not None
+    assert table.request.turn_timeout_seconds == 15
+    texts = [text for _chat, text, _markup in messages]
+    assert any("Turn timer: 15s" in text for text in texts)
+
+
+def test_telegram_turn_timeout_notifies_human_player() -> None:
+    app, messages = make_app(max_hands=1)
+
+    async def scenario() -> None:
+        await complete_create_flow(app, total_seats="2", llm_seats="1", turn_timeout="1")
+        table = app.registry.get_user_table(1)
+        assert table is not None
+        await app.handle_start_game_command(user_id=1, chat_id=101)
+        assert table.orchestrator_task is not None
+        await table.orchestrator_task
+
+    asyncio.run(scenario())
+
+    texts = [text for _chat, text, _markup in messages]
+    assert any("Time expired. Auto-" in text for text in texts)

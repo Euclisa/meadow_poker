@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, replace
 import logging
+import time
+from typing import Awaitable, Callable, Sequence
 
 from poker_bot.players.base import PlayerAgent
 from poker_bot.poker.engine import PokerEngine
@@ -18,7 +21,9 @@ from poker_bot.types import (
     HandStateSnapshot,
     HandTrace,
     HandTransition,
+    LegalAction,
     PlayerAction,
+    DecisionRequest,
     PlayerUpdate,
     PlayerUpdateType,
 )
@@ -38,12 +43,53 @@ class _CurrentHandTraceState:
     transitions: list[HandTransition]
 
 
+@dataclass(frozen=True, slots=True)
+class ActiveTurnTimer:
+    seat_id: str
+    started_monotonic: float
+    started_epoch_ms: int
+    duration_seconds: int
+
+    @property
+    def deadline_monotonic(self) -> float:
+        return self.started_monotonic + self.duration_seconds
+
+    @property
+    def deadline_epoch_ms(self) -> int:
+        return self.started_epoch_ms + (self.duration_seconds * 1000)
+
+
+def resolve_fallback_action(legal_actions: Sequence[LegalAction]) -> PlayerAction:
+    legal_types = {action.action_type for action in legal_actions}
+    if ActionType.CHECK in legal_types:
+        return PlayerAction(action_type=ActionType.CHECK)
+    if ActionType.FOLD in legal_types:
+        return PlayerAction(action_type=ActionType.FOLD)
+    if legal_actions:
+        first = legal_actions[0]
+        return PlayerAction(action_type=first.action_type, amount=first.min_amount)
+    raise ValueError("Cannot resolve fallback action without any legal actions")
+
+
 class GameOrchestrator:
     """Runs repeated hands while remaining agnostic to player-agent type."""
 
-    def __init__(self, engine: PokerEngine, player_agents: dict[str, PlayerAgent]) -> None:
+    def __init__(
+        self,
+        engine: PokerEngine,
+        player_agents: dict[str, PlayerAgent],
+        *,
+        turn_timeout_seconds: int | None = None,
+        on_turn_state_changed: Callable[[], Awaitable[None]] | None = None,
+        on_turn_timeout: Callable[[DecisionRequest, PlayerAction], Awaitable[None]] | None = None,
+    ) -> None:
+        if turn_timeout_seconds is not None and turn_timeout_seconds <= 0:
+            raise ValueError("turn_timeout_seconds must be positive when set")
         self.engine = engine
         self.player_agents = player_agents
+        self.turn_timeout_seconds = turn_timeout_seconds
+        self._on_turn_state_changed = on_turn_state_changed
+        self._on_turn_timeout = on_turn_timeout
         self.event_log: list[GameEvent] = []
         self.completed_hand_archives: list[HandArchive] = []
         self.last_seen_event_index = {seat_id: 0 for seat_id in player_agents}
@@ -54,6 +100,7 @@ class GameOrchestrator:
         self._current_hand_number: int | None = None
         self._current_hand_ended_in_showdown = False
         self._current_hand_trace: _CurrentHandTraceState | None = None
+        self._turn_timer: ActiveTurnTimer | None = None
 
         for seat_id in player_agents:
             engine.get_player_view(seat_id)
@@ -84,6 +131,10 @@ class GameOrchestrator:
             current_public_view=self.engine.get_public_table_view(),
             ended_in_showdown=self._current_hand_ended_in_showdown,
         )
+
+    @property
+    def current_turn_timer(self) -> ActiveTurnTimer | None:
+        return self._turn_timer
 
     async def play_hand(self) -> HandRunResult:
         if self._stop_requested:
@@ -138,6 +189,7 @@ class GameOrchestrator:
         )
 
     async def close(self) -> None:
+        await self._clear_turn_timer()
         for agent in self.player_agents.values():
             await agent.close()
 
@@ -146,6 +198,7 @@ class GameOrchestrator:
             return
         logger.info("Completing table reason=%s hand_number=%s", reason, hand_number)
         self._stop_requested = True
+        await self._clear_turn_timer()
         self._append_events((
             GameEvent("table_completed", {"reason": reason, "hand_number": hand_number}),
         ))
@@ -167,20 +220,42 @@ class GameOrchestrator:
                 self.engine.get_phase(),
                 pending_error,
             )
-            decision = self.engine.get_decision_request(
-                acting_seat,
-                validation_error=pending_error,
-            )
-            try:
-                action = await agent.request_action(decision)
-            except Exception as exc:
-                legal_types = {la.action_type for la in decision.legal_actions}
-                default_type = ActionType.CHECK if ActionType.CHECK in legal_types else ActionType.FOLD
-                action = PlayerAction(action_type=default_type)
-                logger.warning(
-                    "Bot error acting_seat=%s default_action=%s exc=%r",
+            decision = replace(
+                self.engine.get_decision_request(
                     acting_seat,
-                    default_type,
+                    validation_error=pending_error,
+                ),
+                turn_timeout_seconds=self.turn_timeout_seconds,
+            )
+            await self._ensure_turn_timer(acting_seat)
+            try:
+                action = await self._request_action(agent, decision)
+            except asyncio.CancelledError as exc:
+                if asyncio.current_task() is not None and asyncio.current_task().cancelling():
+                    raise
+                action = resolve_fallback_action(decision.legal_actions)
+                logger.warning(
+                    "Pending action cancelled acting_seat=%s fallback_action=%s exc=%r",
+                    acting_seat,
+                    action,
+                    exc,
+                )
+            except asyncio.TimeoutError:
+                action = resolve_fallback_action(decision.legal_actions)
+                logger.warning(
+                    "Turn timed out acting_seat=%s timeout=%s fallback_action=%s",
+                    acting_seat,
+                    self.turn_timeout_seconds,
+                    action,
+                )
+                if self._on_turn_timeout is not None:
+                    await self._on_turn_timeout(decision, action)
+            except Exception as exc:
+                action = resolve_fallback_action(decision.legal_actions)
+                logger.warning(
+                    "Bot error acting_seat=%s fallback_action=%s exc=%r",
+                    acting_seat,
+                    action,
                     exc,
                 )
             logger.debug("Received action acting_seat=%s action=%s", acting_seat, action)
@@ -191,6 +266,7 @@ class GameOrchestrator:
             logger.debug("Engine apply_action result=%s events=%s", result, result.events)
             if not result.ok:
                 if result.events or result.state_changed or self.engine.get_phase() == GamePhase.TABLE_COMPLETE:
+                    await self._clear_turn_timer()
                     self._append_events(result.events)
                     await self._deliver_updates()
                     logger.info("Hand ended mid-action result=%s", result)
@@ -198,6 +274,7 @@ class GameOrchestrator:
                 self._pending[acting_seat].validation_error = result.error
                 logger.warning("Invalid action from seat=%s error=%s", acting_seat, result.error)
                 continue
+            await self._clear_turn_timer()
             self._record_action_transition(acting_seat, action, result.events)
             action_events = list(result.events)
             action_events.extend(self._record_automatic_progress())
@@ -258,6 +335,7 @@ class GameOrchestrator:
         self._current_hand_start_view = public_view
         self._current_hand_number = public_view.hand_number
         self._current_hand_ended_in_showdown = False
+        self._turn_timer = None
         self._current_hand_trace = _CurrentHandTraceState(
             initial_state=self.engine.export_hand_state_snapshot(),
             initial_events=initial_events,
@@ -295,6 +373,7 @@ class GameOrchestrator:
         self._current_hand_number = None
         self._current_hand_ended_in_showdown = False
         self._current_hand_trace = None
+        self._turn_timer = None
         return archive
 
     def _record_action_transition(
@@ -331,3 +410,39 @@ class GameOrchestrator:
             )
             recorded_events.extend(progress.events)
         return tuple(recorded_events)
+
+    async def _request_action(self, agent: PlayerAgent, decision: DecisionRequest) -> PlayerAction:
+        if self.turn_timeout_seconds is None:
+            return await agent.request_action(decision)
+        remaining = self._remaining_turn_seconds()
+        if remaining is not None and remaining <= 0:
+            raise asyncio.TimeoutError
+        return await asyncio.wait_for(agent.request_action(decision), timeout=remaining)
+
+    async def _ensure_turn_timer(self, seat_id: str) -> None:
+        if self.turn_timeout_seconds is None:
+            return
+        if self._turn_timer is not None and self._turn_timer.seat_id == seat_id:
+            return
+        self._turn_timer = ActiveTurnTimer(
+            seat_id=seat_id,
+            started_monotonic=time.monotonic(),
+            started_epoch_ms=int(time.time() * 1000),
+            duration_seconds=self.turn_timeout_seconds,
+        )
+        await self._notify_turn_state_changed()
+
+    async def _clear_turn_timer(self) -> None:
+        if self._turn_timer is None:
+            return
+        self._turn_timer = None
+        await self._notify_turn_state_changed()
+
+    async def _notify_turn_state_changed(self) -> None:
+        if self._on_turn_state_changed is not None:
+            await self._on_turn_state_changed()
+
+    def _remaining_turn_seconds(self) -> float | None:
+        if self._turn_timer is None:
+            return None
+        return max(0.0, self._turn_timer.deadline_monotonic - time.monotonic())

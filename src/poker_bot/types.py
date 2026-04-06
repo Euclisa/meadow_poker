@@ -148,6 +148,7 @@ class DecisionRequest:
     public_table_view: PublicTableView
     legal_actions: tuple[LegalAction, ...]
     validation_error: ActionValidationError | None = None
+    turn_timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +276,7 @@ class TelegramTableCreateRequest:
     small_blind: int = 50
     big_blind: int = 100
     starting_stack: int = 2_000
+    turn_timeout_seconds: int | None = None
 
     def __post_init__(self) -> None:
         TableConfig(
@@ -282,6 +284,8 @@ class TelegramTableCreateRequest:
             big_blind=self.big_blind,
             starting_stack=self.starting_stack,
         )
+        if self.turn_timeout_seconds is not None and self.turn_timeout_seconds <= 0:
+            raise ValueError("turn_timeout_seconds must be positive when set")
 
     @property
     def telegram_seat_count(self) -> int:
@@ -301,6 +305,7 @@ class TelegramTableStatus:
     telegram_seats_claimed: int
     llm_seat_count: int
     joined_user_ids: tuple[int, ...]
+    turn_timeout_seconds: int | None
 
 
 @dataclass(slots=True)

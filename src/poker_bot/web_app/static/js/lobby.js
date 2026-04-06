@@ -20,6 +20,7 @@ const state = {
   createLlmSeats: "",
   createBigBlind: "",
   createStackDepth: "",
+  createTurnTimeout: "",
   joinName: "",
   joinCode: "",
   busy: false,
@@ -49,6 +50,7 @@ export function renderLobbyMarkup(model) {
     stack_depth: 20,
     big_blind_presets: [20, 50, 100, 200, 500],
     stack_depth_presets: [20, 40, 100, 200],
+    turn_timeout_seconds: null,
   };
   const selectedTotalSeats = Number(model.createTotalSeats || Math.min(4, defaults.max_players));
   const selectedLlmSeats = Math.min(
@@ -57,8 +59,14 @@ export function renderLobbyMarkup(model) {
   );
   const selectedBigBlind = Number(model.createBigBlind || defaults.big_blind);
   const selectedStackDepth = Number(model.createStackDepth || defaults.stack_depth);
+  const selectedTurnTimeout = model.createTurnTimeout === ""
+    ? defaults.turn_timeout_seconds
+    : Number(model.createTurnTimeout);
   const selectedSmallBlind = Math.max(1, Math.floor(selectedBigBlind / 2));
   const selectedStartingStack = selectedBigBlind * selectedStackDepth;
+  const turnTimeoutLabel = selectedTurnTimeout && Number.isFinite(selectedTurnTimeout)
+    ? `${selectedTurnTimeout}s`
+    : "Off";
 
   const playerOptions = Array.from({ length: Math.max(0, defaults.max_players - 1) }, (_, index) => index + 2)
     .map(
@@ -150,6 +158,10 @@ export function renderLobbyMarkup(model) {
                   <span>Starting stack</span>
                   <select id="create-stack-depth" name="stack_depth">${stackDepthOptions}</select>
                 </label>
+                <label class="field">
+                  <span>Turn timer</span>
+                  <input id="create-turn-timeout" name="turn_timeout_seconds" type="number" min="1" step="1" value="${escapeHtml(model.createTurnTimeout)}" placeholder="Off">
+                </label>
               </div>
               <div class="settings-card__summary">
                 <div class="settings-stat">
@@ -163,6 +175,10 @@ export function renderLobbyMarkup(model) {
                 <div class="settings-stat">
                   <span>Depth</span>
                   <strong>${selectedStackDepth} BB</strong>
+                </div>
+                <div class="settings-stat">
+                  <span>Turn timer</span>
+                  <strong>${escapeHtml(turnTimeoutLabel)}</strong>
                 </div>
               </div>
             </section>
@@ -217,6 +233,7 @@ export function renderLobbyMarkup(model) {
                           <div><dt>Bots</dt><dd>${table.llm_seats}</dd></div>
                           <div><dt>Blinds</dt><dd>${formatChips(table.small_blind)} / ${formatChips(table.big_blind)}</dd></div>
                           <div><dt>Stack</dt><dd>${formatChips(table.starting_stack)} (${table.stack_depth} BB)</dd></div>
+                          <div><dt>Turn timer</dt><dd>${table.turn_timeout_seconds ? `${escapeHtml(String(table.turn_timeout_seconds))}s` : "Off"}</dd></div>
                           <div><dt>Players</dt><dd>${table.waiting_players.map((player) => escapeHtml(player.display_name)).join(", ")}</dd></div>
                         </dl>
                         <div class="table-card__actions">
@@ -261,8 +278,10 @@ function bindDelegatedEvents() {
   appRoot.addEventListener("input", (event) => {
     const target = event.target;
     if (target.id === "create-name") { state.createName = target.value; }
+    if (target.id === "create-turn-timeout") { state.createTurnTimeout = target.value; }
     if (target.id === "join-name") { state.joinName = target.value; }
     if (target.id === "join-code") { state.joinCode = target.value.trim(); }
+    render();
   });
 
   appRoot.addEventListener("change", (event) => {
@@ -304,6 +323,7 @@ async function onCreateTable(event) {
         llm_seat_count: Number(form.get("llm_seat_count")),
         big_blind: Number(form.get("big_blind")),
         stack_depth: Number(form.get("stack_depth")),
+        turn_timeout_seconds: form.get("turn_timeout_seconds") ? Number(form.get("turn_timeout_seconds")) : null,
       }),
     });
     storeSeatToken(payload.table_id, payload.seat_token);
