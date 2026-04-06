@@ -34,7 +34,7 @@ echo "Installing dependencies..."
 .venv/bin/pip install -r requirements.txt
 
 echo "Running focused checks..."
-PYTHONPATH=src .venv/bin/pytest \
+.venv/bin/pytest \
   tests/test_config.py \
   tests/test_backend_http.py \
   tests/test_telegram_app.py \

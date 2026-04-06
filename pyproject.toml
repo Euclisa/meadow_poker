@@ -16,11 +16,8 @@ telegram = ["aiogram>=3.0.0"]
 web = ["aiohttp>=3.10.0"]
 dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23.0"]
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-
 [tool.setuptools.packages.find]
-where = ["src"]
+include = ["meadow*"]
 
 [tool.setuptools.package-data]
 "meadow" = [
@@ -31,5 +28,5 @@ where = ["src"]
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["."]
 testpaths = ["tests"]

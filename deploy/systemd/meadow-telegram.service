@@ -8,7 +8,6 @@ Type=simple
 User=meadow
 Group=meadow
 WorkingDirectory=/home/meadow/app
-Environment=PYTHONPATH=src
 ExecStart=/home/meadow/app/.venv/bin/python -m meadow --config config/config.toml telegram
 Restart=always
 RestartSec=3

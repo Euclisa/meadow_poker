@@ -45,7 +45,7 @@ Shared runtime configuration lives in `config/config.toml`. Per-table blinds, an
   - `max_hands_per_table` is optional and mirrors the Telegram table cap behavior.
   - `showdown_delay_seconds` is the local web default when it spins up an in-process backend.
 
-LLM seat display names are drawn from [names.txt](src/meadow/data/names.txt) and get a `_bot` suffix, for example `Nova_bot`. Telegram human seats use the Telegram display name passed by the bot runtime.
+LLM seat display names are drawn from [names.txt](meadow/data/names.txt) and get a `_bot` suffix, for example `Nova_bot`. Telegram human seats use the Telegram display name passed by the bot runtime.
 
 The committed template is `config/config.toml.example`. The real `config/config.toml` is ignored by git so secrets stay local to your worktree.
 
@@ -54,13 +54,13 @@ The committed template is `config/config.toml.example`. The real `config/config.
 Run the CLI table against the configured backend:
 
 ```bash
-PYTHONPATH=src python3 -m meadow --config config/config.toml cli --players Alice,bot,Bob --max-hands 1 --big-blind 100 --ante 10 --starting-stack 2000
+python3 -m meadow --config config/config.toml cli --players Alice,bot,Bob --max-hands 1 --big-blind 100 --ante 10 --starting-stack 2000
 ```
 
 Run the Telegram bot:
 
 ```bash
-PYTHONPATH=src python3 -m meadow --config config/config.toml telegram
+python3 -m meadow --config config/config.toml telegram
 ```
 
 Telegram table creation prompts for seat counts, blinds, ante, and starting stack, with `Default` shortcuts for the standard values.
@@ -68,7 +68,7 @@ Telegram table creation prompts for seat counts, blinds, ante, and starting stac
 Run the web lobby and table UI:
 
 ```bash
-PYTHONPATH=src python3 -m meadow --config config/config.toml web
+python3 -m meadow --config config/config.toml web
 ```
 
 Then open `http://127.0.0.1:8080` in your browser, unless you changed `[web].host` or `[web].port`.
@@ -76,7 +76,7 @@ Then open `http://127.0.0.1:8080` in your browser, unless you changed `[web].hos
 Run the standalone backend server:
 
 ```bash
-PYTHONPATH=src python3 -m meadow --config config/config.toml backend
+python3 -m meadow --config config/config.toml backend
 ```
 
 In `backend.mode = "remote"`, the CLI, Telegram bot, and web app all talk to `backend.gateway_url` instead of creating their own in-process backend.
@@ -179,7 +179,7 @@ sudo journalctl -u meadow-backend -u meadow-telegram -f
 
 ### Troubleshooting
 
-- Invalid config: run `PYTHONPATH=src .venv/bin/python -m meadow --config config/config.toml backend` manually to surface TOML and validation errors.
+- Invalid config: run `.venv/bin/python -m meadow --config config/config.toml backend` manually to surface TOML and validation errors.
 - Missing Python dependencies: rerun `.venv/bin/pip install -r requirements.txt`.
 - Telegram cannot reach the backend: confirm `meadow-backend` is running and `gateway_url` is set to `http://127.0.0.1:8090`.
 - Service restart loop: inspect `sudo journalctl -u meadow-backend -u meadow-telegram -n 200`.
