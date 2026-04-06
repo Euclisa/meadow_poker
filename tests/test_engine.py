@@ -12,6 +12,7 @@ def make_engine(
     stacks: tuple[int, ...],
     small_blind: int = 50,
     big_blind: int = 100,
+    ante: int = 0,
 ) -> PokerEngine:
     seats = [
         SeatConfig(seat_id=f"p{index + 1}", name=f"P{index + 1}", starting_stack=stack)
@@ -21,6 +22,7 @@ def make_engine(
         TableConfig(
             small_blind=small_blind,
             big_blind=big_blind,
+            ante=ante,
             deck_factory=DeckSequenceFactory([deck]),
         ),
         seats,
@@ -51,6 +53,46 @@ def test_start_next_hand_sets_first_actor_and_legal_actions() -> None:
     assert engine.get_acting_seat() == "p1"
     legal_actions = {item.action_type for item in engine.get_legal_actions("p1")}
     assert legal_actions == {ActionType.FOLD, ActionType.CALL, ActionType.RAISE}
+
+
+def test_table_config_accepts_non_negative_ante_and_rejects_negative() -> None:
+    assert TableConfig(ante=0).ante == 0
+    assert TableConfig(ante=25).ante == 25
+    with pytest.raises(ValueError, match="ante must be non-negative"):
+        TableConfig(ante=-1)
+
+
+def test_start_next_hand_posts_antes_before_blinds_without_affecting_to_call() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Qd", "Ad", "Ks", "Qc", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(2_000, 2_000, 2_000),
+        ante=10,
+    )
+
+    result = engine.start_next_hand()
+
+    assert result.ok is True
+    assert [event.event_type for event in result.events[:6]] == [
+        "hand_started",
+        "ante_posted",
+        "ante_posted",
+        "ante_posted",
+        "blind_posted",
+        "blind_posted",
+    ]
+    public_view = engine.get_public_table_view()
+    p1_view = engine.get_player_view("p1")
+    assert public_view.ante == 10
+    assert public_view.pot_total == 180
+    assert public_view.current_bet == 100
+    assert p1_view.to_call == 100
+    seat_map = {seat.seat_id: seat for seat in public_view.seats}
+    assert seat_map["p1"].contribution == 10
+    assert seat_map["p1"].street_contribution == 0
+    assert seat_map["p2"].contribution == 60
+    assert seat_map["p2"].street_contribution == 50
+    assert seat_map["p3"].contribution == 110
+    assert seat_map["p3"].street_contribution == 100
 
 
 def test_invalid_action_does_not_mutate_state() -> None:
@@ -272,6 +314,37 @@ def test_seat_snapshot_exposes_street_contribution_that_resets_on_new_street() -
     assert flop_seats["p1"].street_contribution == 0
     assert flop_seats["p2"].contribution == 100
     assert flop_seats["p2"].street_contribution == 0
+
+
+def test_partial_ante_posts_remaining_stack() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Qd", "Ad", "Ks", "Qc", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(15, 2_000),
+        ante=20,
+    )
+
+    result = engine.start_next_hand()
+
+    assert result.ok is True
+    ante_events = [event for event in result.events if event.event_type == "ante_posted"]
+    assert [event.payload["amount"] for event in ante_events] == [15, 20]
+
+
+def test_player_all_in_from_ante_stays_in_hand_and_is_dealt_cards() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Qd", "Ad", "Ks", "Qc", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(5, 2_000, 2_000),
+        ante=5,
+    )
+
+    result = engine.start_next_hand()
+
+    assert result.ok is True
+    p1 = next(seat for seat in engine.get_public_table_view().seats if seat.seat_id == "p1")
+    assert p1.in_hand is True
+    assert p1.all_in is True
+    assert engine.get_player_view("p1").hole_cards == ("As", "Ad")
+    assert engine.get_acting_seat() == "p2"
 
 
 def test_short_stack_all_in_raise_below_full_minimum_is_still_legal() -> None:
@@ -515,6 +588,26 @@ def test_chip_conservation_across_hands() -> None:
     assert total_after_h2 == initial_total
 
 
+def test_chip_conservation_across_hands_with_ante() -> None:
+    deck1 = ("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc")
+    deck2 = ("Qs", "Jh", "Qd", "Jd", "2h", "3c", "4d", "5s", "6c")
+    engine = PokerEngine.create_table(
+        TableConfig(ante=10, deck_factory=DeckSequenceFactory([deck1, deck2])),
+        [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
+    )
+    initial_total = sum(s.stack for s in engine.get_public_table_view().seats)
+
+    engine.start_next_hand()
+    engine.apply_action("p1", PlayerAction(ActionType.FOLD))
+    total_after_h1 = sum(s.stack for s in engine.get_public_table_view().seats)
+    assert total_after_h1 == initial_total
+
+    engine.start_next_hand()
+    engine.apply_action("p2", PlayerAction(ActionType.FOLD))
+    total_after_h2 = sum(s.stack for s in engine.get_public_table_view().seats)
+    assert total_after_h2 == initial_total
+
+
 # ---------------------------------------------------------------------------
 # Edge case: heads-up both all-in preflop triggers auto-runout
 # ---------------------------------------------------------------------------
@@ -564,7 +657,7 @@ def test_action_rejected_when_hand_not_in_progress() -> None:
 def test_deck_exhaustion_during_deal_refunds_blinds() -> None:
     # Only 3 cards — enough for blinds but not for dealing hole cards
     engine = PokerEngine.create_table(
-        TableConfig(deck_factory=DeckSequenceFactory([("As", "Kh", "Qd")])),
+        TableConfig(ante=5, deck_factory=DeckSequenceFactory([("As", "Kh", "Qd")])),
         [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
     )
     initial_total = sum(s.stack for s in engine.get_public_table_view().seats)
@@ -574,6 +667,18 @@ def test_deck_exhaustion_during_deal_refunds_blinds() -> None:
     assert result.ok is False
     assert result.error is not None
     assert result.error.code == "deck_exhausted"
+    assert [event.event_type for event in result.events[:5]] == [
+        "hand_started",
+        "ante_posted",
+        "ante_posted",
+        "blind_posted",
+        "blind_posted",
+    ]
+    refunds = [event.payload for event in result.events if event.event_type == "chips_refunded"]
+    assert refunds == [
+        {"seat_id": "p1", "amount": 55},
+        {"seat_id": "p2", "amount": 105},
+    ]
     final_total = sum(s.stack for s in engine.get_public_table_view().seats)
     assert final_total == initial_total  # all chips refunded
 

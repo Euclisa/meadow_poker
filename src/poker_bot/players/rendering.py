@@ -187,6 +187,8 @@ def _render_cli_event(event: GameEvent, *, seat_names: dict[str, str]) -> str | 
     name = _seat_label(payload.get("seat_id"), seat_names)
     if event.event_type == "hand_started":
         return f"\n{_SEPARATOR}\n  Hand #{payload['hand_number']}\n{_SEPARATOR}"
+    if event.event_type == "ante_posted":
+        return f"  {name}: ante {payload['amount']}"
     if event.event_type == "blind_posted":
         return f"  {name}: {payload['blind']} blind {payload['amount']}"
     if event.event_type == "street_started":
@@ -267,6 +269,8 @@ def _render_event(event: GameEvent, *, seat_names: dict[str, str] | None = None)
         if amount is None:
             return f"{name} -> {payload['action']}"
         return f"{name} -> {payload['action']} {amount}"
+    if event.event_type == "ante_posted":
+        return f"{name} posted ante {payload['amount']}"
     if event.event_type == "blind_posted":
         return f"{name} posted {payload['blind']} blind {payload['amount']}"
     if event.event_type == "street_started":
@@ -325,6 +329,8 @@ def _render_telegram_event(
         if amount is not None:
             return ("action", f"{styled_name}: {action} {amount}")
         return ("action", f"{styled_name}: {action}")
+    if event.event_type == "ante_posted":
+        return ("action", f"{styled_name}: ante {payload['amount']}")
     if event.event_type == "blind_posted":
         return ("action", f"{styled_name}: {payload['blind']} blind {payload['amount']}")
     if event.event_type == "pot_awarded":

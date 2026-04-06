@@ -126,7 +126,9 @@ def test_web_app_lobby_stream_and_html_shell() -> None:
         assert initial_lobby["tables"] == []
         assert initial_lobby["defaults"]["max_players"] == 6
         assert initial_lobby["defaults"]["big_blind"] == 100
+        assert initial_lobby["defaults"]["ante"] == 0
         assert initial_lobby["defaults"]["stack_depth"] == 20
+        assert initial_lobby["defaults"]["ante_presets"] == [0.0, 0.1, 0.2, 0.5, 1.0]
         assert initial_lobby["defaults"]["turn_timeout_seconds"] is None
 
         queue = app.registry.subscribe_lobby()
@@ -311,6 +313,7 @@ def test_web_app_create_table_uses_selected_game_presets() -> None:
                     "total_seats": 2,
                     "llm_seat_count": 0,
                     "big_blind": 200,
+                    "ante": 40,
                     "stack_depth": 40,
                 }
             )
@@ -322,11 +325,13 @@ def test_web_app_create_table_uses_selected_game_presets() -> None:
         waiting_snapshot = created["snapshot"]
         assert waiting_snapshot["config_summary"]["small_blind"] == 100
         assert waiting_snapshot["config_summary"]["big_blind"] == 200
+        assert waiting_snapshot["config_summary"]["ante"] == 40
         assert waiting_snapshot["config_summary"]["starting_stack"] == 8000
         assert waiting_snapshot["config_summary"]["stack_depth"] == 40
 
         lobby_snapshot = app._lobby_snapshot()
         assert lobby_snapshot["tables"][0]["big_blind"] == 200
+        assert lobby_snapshot["tables"][0]["ante"] == 40
         assert lobby_snapshot["tables"][0]["starting_stack"] == 8000
         assert lobby_snapshot["tables"][0]["stack_depth"] == 40
 
@@ -348,8 +353,10 @@ def test_web_app_create_table_uses_selected_game_presets() -> None:
         await asyncio.sleep(0.05)
 
         running_snapshot = await _fetch_table_snapshot(app, table_id=table_id, seat_token=bob_token)
+        assert running_snapshot["config_summary"]["ante"] == 40
         assert running_snapshot["config_summary"]["starting_stack"] == 8000
         assert running_snapshot["config_summary"]["stack_depth"] == 40
+        assert running_snapshot["public_table"]["ante"] == 40
         assert running_snapshot["public_table"]["small_blind"] == 100
         assert running_snapshot["public_table"]["big_blind"] == 200
 
@@ -385,8 +392,23 @@ def test_web_app_rejects_game_settings_outside_supported_presets() -> None:
                         "stack_depth": 33,
                     }
                 )
-            )
+        )
         assert "stack_depth" in stack_depth_error.value.text
+
+        with pytest.raises(app._require_aiohttp().HTTPBadRequest) as ante_error:
+            await app.handle_create_table(
+                FakeRequest(
+                    payload={
+                        "display_name": "Alice",
+                        "total_seats": 2,
+                        "llm_seat_count": 0,
+                        "big_blind": 100,
+                        "ante": -1,
+                        "stack_depth": 20,
+                    }
+                )
+            )
+        assert "ante" in ante_error.value.text
 
     asyncio.run(scenario())
 

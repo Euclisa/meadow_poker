@@ -142,6 +142,8 @@ def _render_summary_event(event: GameEvent, seat_names: dict[str, str]) -> str |
     payload = event.payload
     seat_id = payload.get("seat_id")
     name = seat_names.get(seat_id, seat_id or "unknown")
+    if event.event_type == "ante_posted":
+        return f"{name} posted ante {payload['amount']}"
     if event.event_type == "blind_posted":
         return f"{name} posted {payload['blind']} blind {payload['amount']}"
     if event.event_type == "action_applied":

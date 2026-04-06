@@ -99,6 +99,7 @@ async def complete_create_flow(
     llm_seats: str = "0",
     big_blind: str = "default",
     small_blind: str = "default",
+    ante: str = "default",
     starting_stack: str = "default",
     turn_timeout: str = "default",
 ) -> None:
@@ -107,6 +108,7 @@ async def complete_create_flow(
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=llm_seats)
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=big_blind)
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=small_blind)
+    await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=ante)
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=starting_stack)
     await app.handle_text_message(user_id=user_id, chat_id=chat_id, display_name=display_name, text=turn_timeout)
 
@@ -366,6 +368,7 @@ def test_lobby_buttons_work_as_text_commands() -> None:
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="My Table")
 
     asyncio.run(scenario())
@@ -383,6 +386,7 @@ def test_help_works_during_create_flow() -> None:
         # Flow should still be active after help
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="2")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="0")
+        await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
         await app.handle_text_message(user_id=1, chat_id=101, display_name="Alice", text="default")
@@ -438,6 +442,7 @@ def test_create_table_flow_accepts_custom_blinds_and_stack() -> None:
             llm_seats="1",
             big_blind="200",
             small_blind="100",
+            ante="25",
             starting_stack="8000",
         )
 
@@ -447,10 +452,32 @@ def test_create_table_flow_accepts_custom_blinds_and_stack() -> None:
     assert table is not None
     assert table.request.small_blind == 100
     assert table.request.big_blind == 200
+    assert table.request.ante == 25
     assert table.request.starting_stack == 8000
     texts = [text for _chat, text, _markup in messages]
     assert any("Blinds: 100/200" in text for text in texts)
+    assert any("Ante: 25" in text for text in texts)
     assert any("Starting stack: 8000" in text for text in texts)
+
+
+def test_create_table_flow_accepts_off_ante() -> None:
+    app, messages = make_app()
+
+    async def scenario() -> None:
+        await complete_create_flow(
+            app,
+            total_seats="2",
+            llm_seats="0",
+            ante="off",
+        )
+
+    asyncio.run(scenario())
+
+    table = app.registry.get_user_table(1)
+    assert table is not None
+    assert table.request.ante == 0
+    texts = [text for _chat, text, _markup in messages]
+    assert any("Ante: Off" in text for text in texts)
 
 
 def test_create_table_flow_accepts_turn_timeout() -> None:

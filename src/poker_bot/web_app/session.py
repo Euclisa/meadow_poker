@@ -16,9 +16,12 @@ class WebTableCreateRequest:
     llm_seat_count: int
     big_blind: int
     stack_depth: int
+    ante: int = 0
     turn_timeout_seconds: int | None = None
 
     def __post_init__(self) -> None:
+        if self.ante < 0:
+            raise ValueError("ante must be non-negative")
         if self.turn_timeout_seconds is not None and self.turn_timeout_seconds <= 0:
             raise ValueError("turn_timeout_seconds must be positive when set")
 

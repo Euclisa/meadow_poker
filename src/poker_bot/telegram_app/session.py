@@ -85,6 +85,7 @@ class TelegramTableSession:
             total_seats=self.total_seats,
             small_blind=self.request.small_blind,
             big_blind=self.request.big_blind,
+            ante=self.request.ante,
             starting_stack=self.request.starting_stack,
             telegram_seats_total=self.telegram_seat_count,
             telegram_seats_claimed=len(self.claimed_telegram_users),

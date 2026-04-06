@@ -21,7 +21,7 @@ cp config/config.toml.example config/config.toml
 
 ## Configuration
 
-Shared runtime configuration lives in `config/config.toml`. Per-table blinds and stack can be set from CLI flags or during Telegram table creation.
+Shared runtime configuration lives in `config/config.toml`. Per-table blinds, ante, and stack can be set from CLI flags or during Telegram table creation.
 
 - `[game]` controls shared table-size limits and logging.
 - `[llm]` configures the OpenAI-compatible backend used by LLM seats.
@@ -48,7 +48,7 @@ The committed template is `config/config.toml.example`. The real `config/config.
 Run the CLI table:
 
 ```bash
-PYTHONPATH=src python3 -m poker_bot --config config/config.toml cli --players Alice,bot,Bob --max-hands 1 --big-blind 100 --starting-stack 2000
+PYTHONPATH=src python3 -m poker_bot --config config/config.toml cli --players Alice,bot,Bob --max-hands 1 --big-blind 100 --ante 10 --starting-stack 2000
 ```
 
 Run the Telegram bot:
@@ -57,7 +57,7 @@ Run the Telegram bot:
 PYTHONPATH=src python3 -m poker_bot --config config/config.toml telegram
 ```
 
-Telegram table creation now prompts for seat counts, blinds, and starting stack, with `Default` shortcuts for the standard values.
+Telegram table creation now prompts for seat counts, blinds, ante, and starting stack, with `Default` shortcuts for the standard values.
 
 Run the web lobby and table UI:
 
@@ -88,6 +88,7 @@ The `cli` entry point now requires the local table layout as explicit command-li
 - `--max-hands` controls how many hands the local run will play before exiting.
 - `--big-blind` defaults to `100`.
 - `--small-blind` defaults to half of `--big-blind`.
+- `--ante` defaults to `0`.
 - `--starting-stack` defaults to `20` big blinds.
 
 This keeps `config/config.toml` focused on shared services and shared runtime limits, while the CLI command itself explicitly describes the local table you want to run.

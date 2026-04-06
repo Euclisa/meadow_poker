@@ -137,6 +137,7 @@ def test_run_cli_mode_accepts_custom_blinds_and_stack(monkeypatch: pytest.Monkey
             max_hands=1,
             big_blind=200,
             small_blind=100,
+            ante=25,
             starting_stack=8_000,
         )
     )
@@ -146,6 +147,7 @@ def test_run_cli_mode_accepts_custom_blinds_and_stack(monkeypatch: pytest.Monkey
     table_view = orchestrator.engine.get_public_table_view()
     assert table_view.small_blind == 100
     assert table_view.big_blind == 200
+    assert table_view.ante == 25
     assert all(seat.stack == 8_000 for seat in table_view.seats)
 
 
@@ -175,3 +177,8 @@ def test_run_cli_mode_rejects_duplicate_human_names_case_insensitively() -> None
 def test_run_cli_mode_requires_llm_config_when_bot_seat_is_present() -> None:
     with pytest.raises(ValueError, match="when CLI uses bot seats"):
         asyncio.run(run_cli_mode(make_config(with_llm=False), players_spec="Alice,bot", max_hands=1))
+
+
+def test_run_cli_mode_rejects_negative_ante() -> None:
+    with pytest.raises(ValueError, match="ante must be non-negative"):
+        asyncio.run(run_cli_mode(make_config(), players_spec="Alice,Bob", max_hands=1, ante=-1))

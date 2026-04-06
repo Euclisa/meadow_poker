@@ -39,6 +39,7 @@ def serialize_waiting_table(session: WebTableSession) -> dict[str, Any]:
         "llm_seats": session.llm_seat_count,
         "small_blind": session.request.small_blind,
         "big_blind": session.request.big_blind,
+        "ante": session.request.ante,
         "starting_stack": session.request.starting_stack,
         "stack_depth": session.request.stack_depth,
         "turn_timeout_seconds": session.request.turn_timeout_seconds,
@@ -59,6 +60,7 @@ def serialize_table_snapshot(
     seat_token: str | None,
     small_blind: int,
     big_blind: int,
+    ante: int,
     starting_stack: int,
     max_players: int,
     max_hands_per_table: int | None,
@@ -92,6 +94,7 @@ def serialize_table_snapshot(
             "llm_seats": session.llm_seat_count,
             "small_blind": small_blind,
             "big_blind": big_blind,
+            "ante": ante,
             "starting_stack": starting_stack,
             "stack_depth": session.request.stack_depth,
             "turn_timeout_seconds": session.request.turn_timeout_seconds,
@@ -156,6 +159,7 @@ def serialize_replay_snapshot(
             "llm_seats": session.llm_seat_count,
             "small_blind": session.request.small_blind,
             "big_blind": session.request.big_blind,
+            "ante": session.request.ante,
             "starting_stack": session.request.starting_stack,
             "stack_depth": session.request.stack_depth,
             "turn_timeout_seconds": session.request.turn_timeout_seconds,
@@ -459,6 +463,8 @@ def _render_event_html(event: GameEvent, *, seat_names: dict[str, str] | None = 
         return f"{name} {action} {amount}"
     if event.event_type == "blind_posted":
         return f"{name} {escape(payload['blind'])} blind {payload['amount']}"
+    if event.event_type == "ante_posted":
+        return f"{name} ante {payload['amount']}"
     if event.event_type == "street_started":
         phase = escape(payload["phase"].replace("_", " ").title())
         board_cards = payload.get("board_cards", ())
@@ -493,7 +499,7 @@ def _render_event_html(event: GameEvent, *, seat_names: dict[str, str] | None = 
 def _event_kind(event: GameEvent) -> str:
     if event.event_type in {"pot_awarded", "hand_awarded", "chips_refunded"}:
         return "reward"
-    if event.event_type in {"action_applied", "blind_posted", "showdown_revealed"}:
+    if event.event_type in {"action_applied", "ante_posted", "blind_posted", "showdown_revealed"}:
         return "action"
     return "state"
 
@@ -514,6 +520,7 @@ def _serialize_public_table(
         "acting_seat_id": view.acting_seat_id,
         "small_blind": view.small_blind,
         "big_blind": view.big_blind,
+        "ante": view.ante,
         "seats": [
             _serialize_seat(
                 seat,

@@ -13,6 +13,31 @@ import { morph } from "./morph.js";
 
 const appRoot = document.getElementById("app");
 
+function formatCompactNumber(value) {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) {
+    return "0";
+  }
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1).replace(/\.0$/, "");
+}
+
+function formatBbMultiplier(multiplier) {
+  const numeric = Number(multiplier ?? 0);
+  return numeric <= 0 ? "Off" : `${formatCompactNumber(numeric)} BB`;
+}
+
+function formatAnte(ante, bigBlind) {
+  const anteValue = Number(ante ?? 0);
+  const blindValue = Number(bigBlind ?? 0);
+  if (!Number.isFinite(anteValue) || anteValue <= 0) {
+    return "Off";
+  }
+  if (!Number.isFinite(blindValue) || blindValue <= 0) {
+    return formatChips(anteValue);
+  }
+  return `${formatChips(anteValue)} (${formatCompactNumber(anteValue / blindValue)} BB)`;
+}
+
 const state = {
   lobby: null,
   createName: "",
@@ -20,6 +45,7 @@ const state = {
   createLlmSeats: "",
   createBigBlind: "",
   createStackDepth: "",
+  createAntePreset: "",
   createTurnTimeout: "",
   joinName: "",
   joinCode: "",
@@ -46,10 +72,12 @@ export function renderLobbyMarkup(model) {
     max_players: 6,
     big_blind: 100,
     small_blind: 50,
+    ante: 0,
     starting_stack: 2000,
     stack_depth: 20,
     big_blind_presets: [20, 50, 100, 200, 500],
     stack_depth_presets: [20, 40, 100, 200],
+    ante_presets: [0, 0.1, 0.2, 0.5, 1],
     turn_timeout_seconds: null,
   };
   const selectedTotalSeats = Number(model.createTotalSeats || Math.min(4, defaults.max_players));
@@ -59,10 +87,15 @@ export function renderLobbyMarkup(model) {
   );
   const selectedBigBlind = Number(model.createBigBlind || defaults.big_blind);
   const selectedStackDepth = Number(model.createStackDepth || defaults.stack_depth);
+  const defaultAntePreset = Number(defaults.big_blind)
+    ? Number(defaults.ante || 0) / Number(defaults.big_blind)
+    : 0;
+  const selectedAntePreset = Number(model.createAntePreset || defaultAntePreset || 0);
   const selectedTurnTimeout = model.createTurnTimeout === ""
     ? defaults.turn_timeout_seconds
     : Number(model.createTurnTimeout);
   const selectedSmallBlind = Math.max(1, Math.floor(selectedBigBlind / 2));
+  const selectedAnte = selectedAntePreset > 0 ? Math.round(selectedBigBlind * selectedAntePreset) : 0;
   const selectedStartingStack = selectedBigBlind * selectedStackDepth;
   const turnTimeoutLabel = selectedTurnTimeout && Number.isFinite(selectedTurnTimeout)
     ? `${selectedTurnTimeout}s`
@@ -94,6 +127,13 @@ export function renderLobbyMarkup(model) {
     .map(
       (depth) => `
         <option value="${depth}" ${depth === selectedStackDepth ? "selected" : ""}>${depth} BB</option>
+      `,
+    )
+    .join("");
+  const anteOptions = defaults.ante_presets
+    .map(
+      (multiplier) => `
+        <option value="${multiplier}" ${Number(multiplier) === selectedAntePreset ? "selected" : ""}>${escapeHtml(formatBbMultiplier(multiplier))}</option>
       `,
     )
     .join("");
@@ -159,6 +199,10 @@ export function renderLobbyMarkup(model) {
                   <select id="create-stack-depth" name="stack_depth">${stackDepthOptions}</select>
                 </label>
                 <label class="field">
+                  <span>Ante</span>
+                  <select id="create-ante-preset" name="ante_preset">${anteOptions}</select>
+                </label>
+                <label class="field">
                   <span>Turn timer</span>
                   <input id="create-turn-timeout" name="turn_timeout_seconds" type="number" min="1" step="1" value="${escapeHtml(model.createTurnTimeout)}" placeholder="Off">
                 </label>
@@ -167,6 +211,10 @@ export function renderLobbyMarkup(model) {
                 <div class="settings-stat">
                   <span>Blinds</span>
                   <strong>${formatChips(selectedSmallBlind)} / ${formatChips(selectedBigBlind)}</strong>
+                </div>
+                <div class="settings-stat">
+                  <span>Ante</span>
+                  <strong>${escapeHtml(formatAnte(selectedAnte, selectedBigBlind))}</strong>
                 </div>
                 <div class="settings-stat">
                   <span>Stack</span>
@@ -232,6 +280,7 @@ export function renderLobbyMarkup(model) {
                           <div><dt>Seats</dt><dd>${table.claimed_web_seats}/${table.web_seats} web</dd></div>
                           <div><dt>Bots</dt><dd>${table.llm_seats}</dd></div>
                           <div><dt>Blinds</dt><dd>${formatChips(table.small_blind)} / ${formatChips(table.big_blind)}</dd></div>
+                          <div><dt>Ante</dt><dd>${escapeHtml(formatAnte(table.ante, table.big_blind))}</dd></div>
                           <div><dt>Stack</dt><dd>${formatChips(table.starting_stack)} (${table.stack_depth} BB)</dd></div>
                           <div><dt>Turn timer</dt><dd>${table.turn_timeout_seconds ? `${escapeHtml(String(table.turn_timeout_seconds))}s` : "Off"}</dd></div>
                           <div><dt>Players</dt><dd>${table.waiting_players.map((player) => escapeHtml(player.display_name)).join(", ")}</dd></div>
@@ -297,6 +346,7 @@ function bindDelegatedEvents() {
     if (event.target.id === "create-llm-seats") { state.createLlmSeats = event.target.value; }
     if (event.target.id === "create-big-blind") { state.createBigBlind = event.target.value; }
     if (event.target.id === "create-stack-depth") { state.createStackDepth = event.target.value; }
+    if (event.target.id === "create-ante-preset") { state.createAntePreset = event.target.value; }
     render();
   });
 
@@ -323,6 +373,7 @@ async function onCreateTable(event) {
         llm_seat_count: Number(form.get("llm_seat_count")),
         big_blind: Number(form.get("big_blind")),
         stack_depth: Number(form.get("stack_depth")),
+        ante: Math.round(Number(form.get("big_blind")) * Number(form.get("ante_preset") || 0)),
         turn_timeout_seconds: form.get("turn_timeout_seconds") ? Number(form.get("turn_timeout_seconds")) : null,
       }),
     });

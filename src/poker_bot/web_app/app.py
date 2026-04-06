@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 _STATIC_DIR = Path(__file__).with_name("static")
 _DEFAULT_BIG_BLIND_PRESETS = (20, 50, 100, 200, 500)
 _DEFAULT_STACK_DEPTH_PRESETS = (20, 40, 100, 200)
+_DEFAULT_ANTE_PRESETS = (0.0, 0.1, 0.2, 0.5, 1.0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,10 +47,12 @@ class WebAppConfig:
     port: int = 8080
     small_blind: int = 50
     big_blind: int = 100
+    ante: int = 0
     starting_stack: int = 2_000
     max_players: int = 6
     big_blind_presets: tuple[int, ...] = _DEFAULT_BIG_BLIND_PRESETS
     stack_depth_presets: tuple[int, ...] = _DEFAULT_STACK_DEPTH_PRESETS
+    ante_presets: tuple[float, ...] = _DEFAULT_ANTE_PRESETS
     llm: LLMSettings = field(default_factory=LLMSettings)
     coach: CoachSettings = field(default_factory=CoachSettings)
     max_hands_per_table: int | None = None
@@ -156,18 +159,23 @@ class WebApp:
         llm_seat_count = self._parse_int(payload.get("llm_seat_count"))
         big_blind = self._parse_int(payload.get("big_blind"))
         stack_depth = self._parse_int(payload.get("stack_depth"))
+        ante = self._parse_int(payload.get("ante"))
+        if ante is None and payload.get("ante") is None:
+            ante = max(0, self.config.ante)
         turn_timeout_seconds = self._parse_int(payload.get("turn_timeout_seconds"))
         self._validate_table_request(
             total_seats=total_seats,
             llm_seat_count=llm_seat_count,
             big_blind=big_blind,
             stack_depth=stack_depth,
+            ante=ante,
             turn_timeout_seconds=turn_timeout_seconds,
         )
         assert total_seats is not None
         assert llm_seat_count is not None
         assert big_blind is not None
         assert stack_depth is not None
+        assert ante is not None
 
         session, reservation = self.registry.create_waiting_table(
             creator_name=display_name,
@@ -176,6 +184,7 @@ class WebApp:
                 llm_seat_count=llm_seat_count,
                 big_blind=big_blind,
                 stack_depth=stack_depth,
+                ante=ante,
                 turn_timeout_seconds=turn_timeout_seconds,
             ),
         )
@@ -524,6 +533,7 @@ class WebApp:
             TableConfig(
                 small_blind=session.request.small_blind,
                 big_blind=session.request.big_blind,
+                ante=session.request.ante,
                 starting_stack=session.request.starting_stack,
                 max_players=session.total_seats,
             ),
@@ -643,11 +653,13 @@ class WebApp:
             "max_players": self.config.max_players,
             "small_blind": default_big_blind // 2,
             "big_blind": default_big_blind,
+            "ante": max(0, self.config.ante),
             "starting_stack": default_big_blind * default_stack_depth,
             "stack_depth": default_stack_depth,
             "turn_timeout_seconds": None,
             "big_blind_presets": list(big_blind_presets),
             "stack_depth_presets": list(stack_depth_presets),
+            "ante_presets": list(self._ante_presets()),
             "max_hands_per_table": self.config.max_hands_per_table,
         }
         return snapshot
@@ -658,6 +670,7 @@ class WebApp:
             seat_token=seat_token,
             small_blind=session.request.small_blind,
             big_blind=session.request.big_blind,
+            ante=session.request.ante,
             starting_stack=session.request.starting_stack,
             max_players=session.total_seats,
             max_hands_per_table=self.config.max_hands_per_table,
@@ -728,6 +741,7 @@ class WebApp:
         llm_seat_count: int | None,
         big_blind: int | None,
         stack_depth: int | None,
+        ante: int | None,
         turn_timeout_seconds: int | None,
     ) -> None:
         if total_seats is None or not 2 <= total_seats <= self.config.max_players:
@@ -746,6 +760,10 @@ class WebApp:
             raise self._require_aiohttp().HTTPBadRequest(
                 text="stack_depth must match one of the supported stack presets."
             )
+        if ante is None or ante < 0:
+            raise self._require_aiohttp().HTTPBadRequest(
+                text="ante must be a non-negative integer."
+            )
         if turn_timeout_seconds is not None and turn_timeout_seconds <= 0:
             raise self._require_aiohttp().HTTPBadRequest(
                 text="turn_timeout_seconds must be positive when set."
@@ -760,6 +778,10 @@ class WebApp:
         default_stack_depth = self._default_stack_depth(self._default_big_blind())
         valid_presets = {preset for preset in self.config.stack_depth_presets if preset > 0}
         return tuple(sorted({*valid_presets, default_stack_depth}))
+
+    def _ante_presets(self) -> tuple[float, ...]:
+        valid_presets = {float(preset) for preset in self.config.ante_presets if preset >= 0}
+        return tuple(sorted({*valid_presets, 0.0}))
 
     def _default_big_blind(self) -> int:
         default_big_blind = self.config.big_blind

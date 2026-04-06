@@ -34,6 +34,7 @@ class TelegramAppConfig:
     bot_username: str | None = None
     small_blind: int = 50
     big_blind: int = 100
+    ante: int = 0
     starting_stack: int = 2_000
     max_players: int = 6
     llm: LLMSettings = field(default_factory=LLMSettings)
@@ -48,6 +49,7 @@ class _CreateTableFlowState:
     llm_seat_count: int | None = None
     big_blind: int | None = None
     small_blind: int | None = None
+    ante: int | None = None
     starting_stack: int | None = None
     turn_timeout_seconds: int | None = None
     turn_timeout_configured: bool = False
@@ -508,6 +510,23 @@ class TelegramApp:
             flow.small_blind = small_blind
             await self._send_message(
                 chat_id,
+                f"Enter ante per player. Type Off/Default for {self._format_ante(self.config.ante)}.",
+                self._build_create_flow_keyboard(),
+            )
+            return
+
+        if flow.ante is None:
+            ante = self._parse_ante(text, default=self.config.ante)
+            if ante is None:
+                await self._send_message(
+                    chat_id,
+                    "Enter a valid non-negative ante, or type Off/Default.",
+                    self._build_create_flow_keyboard(),
+                )
+                return
+            flow.ante = ante
+            await self._send_message(
+                chat_id,
                 f"Enter starting stack. Type Default for {self._default_starting_stack(flow.big_blind)}.",
                 self._build_create_flow_keyboard(),
             )
@@ -517,6 +536,7 @@ class TelegramApp:
         assert flow.llm_seat_count is not None
         assert flow.big_blind is not None
         assert flow.small_blind is not None
+        assert flow.ante is not None
         if flow.starting_stack is None:
             starting_stack = self._parse_int_or_default(
                 text,
@@ -554,6 +574,7 @@ class TelegramApp:
             llm_seat_count=flow.llm_seat_count,
             small_blind=flow.small_blind,
             big_blind=flow.big_blind,
+            ante=flow.ante,
             starting_stack=flow.starting_stack,
             turn_timeout_seconds=flow.turn_timeout_seconds,
         )
@@ -620,6 +641,7 @@ class TelegramApp:
             TableConfig(
                 small_blind=session.request.small_blind,
                 big_blind=session.request.big_blind,
+                ante=session.request.ante,
                 starting_stack=session.request.starting_stack,
             ),
             seat_configs,
@@ -709,6 +731,7 @@ class TelegramApp:
             f"Telegram seats: {session.telegram_seat_count}",
             f"LLM seats: {session.llm_seat_count}",
             f"Blinds: {session.request.small_blind}/{session.request.big_blind}",
+            f"Ante: {self._format_ante(session.request.ante)}",
             f"Starting stack: {session.request.starting_stack}",
             f"Turn timer: {self._format_turn_timeout(session.request.turn_timeout_seconds)}",
         ]
@@ -725,6 +748,7 @@ class TelegramApp:
             headline,
             f"Telegram seats: {session.human_player_count}/{session.telegram_seat_count}.",
             f"Blinds: {session.request.small_blind}/{session.request.big_blind}.",
+            f"Ante: {self._format_ante(session.request.ante)}.",
             f"Starting stack: {session.request.starting_stack}.",
             f"Turn timer: {self._format_turn_timeout(session.request.turn_timeout_seconds)}.",
         ]
@@ -751,6 +775,7 @@ class TelegramApp:
                 f"Creator: {status.creator_user_id}",
                 f"Seats: {status.total_seats}",
                 f"Blinds: {status.small_blind}/{status.big_blind}",
+                f"Ante: {self._format_ante(status.ante)}",
                 f"Starting stack: {status.starting_stack}",
                 f"Turn timer: {self._format_turn_timeout(status.turn_timeout_seconds)}",
                 f"Telegram seats: {status.telegram_seats_claimed}/{status.telegram_seats_total}",
@@ -773,6 +798,16 @@ class TelegramApp:
         return TelegramApp._parse_int(raw)
 
     @staticmethod
+    def _parse_ante(raw: str, *, default: int) -> int | None:
+        normalized = raw.strip().lower()
+        if normalized in {"default", "off", "none"}:
+            return default if normalized == "default" else 0
+        parsed = TelegramApp._parse_int(raw)
+        if parsed is None or parsed < 0:
+            return None
+        return parsed
+
+    @staticmethod
     def _parse_turn_timeout(raw: str) -> int | None | object:
         normalized = raw.strip().lower()
         if normalized in {"", "off", "default", "none"}:
@@ -789,6 +824,10 @@ class TelegramApp:
     @staticmethod
     def _default_starting_stack(big_blind: int) -> int:
         return max(1, big_blind * 20)
+
+    @staticmethod
+    def _format_ante(ante: int) -> str:
+        return "Off" if ante <= 0 else str(ante)
 
     @staticmethod
     def _format_turn_timeout(turn_timeout_seconds: int | None) -> str:

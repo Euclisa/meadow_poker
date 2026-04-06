@@ -1043,6 +1043,16 @@ def test_render_events_handles_chips_refunded() -> None:
     assert "Hero refunded 200" in rendered
 
 
+def test_render_events_handles_ante_posted() -> None:
+    events = (
+        GameEvent("ante_posted", {"seat_id": "p1", "amount": 25}),
+    )
+
+    rendered = render_events(events, seat_names={"p1": "Hero"})
+
+    assert "Hero posted ante 25" in rendered
+
+
 def test_render_events_handles_showdown_and_table_completed() -> None:
     events = (
         GameEvent("showdown_started", {"board_cards": ("As", "Kh", "Qd", "Jc", "Tc")}),
@@ -1077,6 +1087,22 @@ def test_render_telegram_chips_refunded_event() -> None:
     assert refund_msg is not None
     assert "💰" in refund_msg
     assert "200" in refund_msg
+
+
+def test_render_telegram_ante_posted_event() -> None:
+    decision = make_decision_request()
+    update = PlayerUpdate(
+        update_type=PlayerUpdateType.STATE_CHANGED,
+        events=(GameEvent("ante_posted", {"seat_id": "p1", "amount": 25}),),
+        public_table_view=decision.public_table_view,
+        player_view=decision.player_view,
+        acting_seat_id=None,
+        is_your_turn=False,
+    )
+
+    messages = render_telegram_update_messages(update)
+
+    assert any("ante 25" in message for message in messages)
 
 
 def test_render_telegram_showdown_revealed_event() -> None:

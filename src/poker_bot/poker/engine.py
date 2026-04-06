@@ -109,6 +109,7 @@ class PokerEngine:
             config=TableConfig(
                 small_blind=snapshot.small_blind,
                 big_blind=snapshot.big_blind,
+                ante=snapshot.ante,
                 starting_stack=1,
                 min_players=2,
                 max_players=max(2, len(seats)),
@@ -165,6 +166,7 @@ class PokerEngine:
             small_blind=self.config.small_blind,
             big_blind=self.config.big_blind,
             seats=tuple(self._seat_snapshot(seat) for seat in self._seats),
+            ante=self.config.ante,
         )
 
     def get_player_view(self, seat_id: str) -> PlayerView:
@@ -208,6 +210,7 @@ class PokerEngine:
             big_blind=self.config.big_blind,
             remaining_deck_order=encode_card_order(self._deck.card_order()),
             seats=tuple(self._hand_seat_state(seat) for seat in self._seats),
+            ante=self.config.ante,
         )
 
     def export_remaining_deck_order(self) -> str:
@@ -301,17 +304,8 @@ class PokerEngine:
         self._last_full_raise_to = 0
         self._acting_index = None
 
-        self._dealer_index = self._next_active_index(self._dealer_index)
+        self._dealer_index = self._next_funded_index(self._dealer_index)
         self._assign_positions()
-        try:
-            self._deal_private_cards()
-        except DeckExhaustedError:
-            return self._terminate_table(
-                code="deck_exhausted",
-                message="The hand deck ran out of cards before the hand could start",
-                reason="deck_exhausted",
-                refund_chips=True,
-            )
 
         events: list[GameEvent] = [
             GameEvent(
@@ -322,7 +316,19 @@ class PokerEngine:
                 },
             )
         ]
+        events.extend(self._post_antes())
         events.extend(self._post_blinds())
+
+        try:
+            self._deal_private_cards()
+        except DeckExhaustedError:
+            return self._terminate_table(
+                code="deck_exhausted",
+                message="The hand deck ran out of cards before the hand could start",
+                reason="deck_exhausted",
+                events=events,
+                refund_chips=True,
+            )
         events.append(
             GameEvent(
                 "street_started",
@@ -719,15 +725,35 @@ class PokerEngine:
     def _can_raise(self, seat: _SeatState) -> bool:
         return (not seat.has_acted_this_round) or seat.last_action_bet_level < self._last_full_raise_to
 
+    def _post_antes(self) -> list[GameEvent]:
+        if self.config.ante <= 0:
+            return []
+
+        events: list[GameEvent] = []
+        for seat in self._seats:
+            if not seat.in_hand:
+                continue
+            amount = min(self.config.ante, seat.stack)
+            if amount <= 0:
+                continue
+            self._commit_dead_chips(seat, amount)
+            events.append(
+                GameEvent(
+                    "ante_posted",
+                    {"seat_id": seat.seat_id, "amount": amount},
+                )
+            )
+        return events
+
     def _post_blinds(self) -> list[GameEvent]:
         events: list[GameEvent] = []
         active_count = sum(1 for seat in self._seats if seat.in_hand)
         if active_count == 2:
             self._small_blind_index = self._dealer_index
-            self._big_blind_index = self._next_active_index(self._dealer_index)
+            self._big_blind_index = self._next_in_hand_index(self._dealer_index)
         else:
-            self._small_blind_index = self._next_active_index(self._dealer_index)
-            self._big_blind_index = self._next_active_index(self._small_blind_index)
+            self._small_blind_index = self._next_in_hand_index(self._dealer_index)
+            self._big_blind_index = self._next_in_hand_index(self._small_blind_index)
 
         small_blind_seat = self._seats[self._small_blind_index]
         big_blind_seat = self._seats[self._big_blind_index]
@@ -738,24 +764,23 @@ class PokerEngine:
         self._current_bet = max(small_blind_seat.committed_this_street, big_blind_seat.committed_this_street)
         self._last_full_raise_to = self._current_bet
 
-        events.append(
-            GameEvent(
-                "blind_posted",
-                {"seat_id": small_blind_seat.seat_id, "blind": "small", "amount": small_blind},
+        if small_blind > 0:
+            events.append(
+                GameEvent(
+                    "blind_posted",
+                    {"seat_id": small_blind_seat.seat_id, "blind": "small", "amount": small_blind},
+                )
             )
-        )
-        events.append(
-            GameEvent(
-                "blind_posted",
-                {"seat_id": big_blind_seat.seat_id, "blind": "big", "amount": big_blind},
+        if big_blind > 0:
+            events.append(
+                GameEvent(
+                    "blind_posted",
+                    {"seat_id": big_blind_seat.seat_id, "blind": "big", "amount": big_blind},
+                )
             )
-        )
         return events
 
     def _first_to_act_preflop(self) -> int | None:
-        active_count = sum(1 for seat in self._seats if seat.in_hand)
-        if active_count == 2:
-            return self._dealer_index
         return self._next_action_index_from(self._big_blind_index)
 
     def _deal_private_cards(self) -> None:
@@ -768,7 +793,7 @@ class PokerEngine:
         active_indices = self._active_indices()
         if len(active_indices) == 2:
             self._seats[self._dealer_index].position = "dealer"
-            other_index = self._next_active_index(self._dealer_index)
+            other_index = self._next_in_hand_index(self._dealer_index)
             self._seats[other_index].position = "big_blind"
             return
 
@@ -776,7 +801,7 @@ class PokerEngine:
         ordered_indices = [self._dealer_index]
         current = self._dealer_index
         for _ in range(len(active_indices) - 1):
-            current = self._next_active_index(current)
+            current = self._next_in_hand_index(current)
             ordered_indices.append(current)
         for label, index in zip(labels, ordered_indices, strict=False):
             self._seats[index].position = label
@@ -786,6 +811,14 @@ class PokerEngine:
             raise ValueError("Invalid chip movement")
         seat.stack -= amount
         seat.committed_this_street += amount
+        seat.committed_this_hand += amount
+        if seat.stack == 0:
+            seat.all_in = True
+
+    def _commit_dead_chips(self, seat: _SeatState, amount: int) -> None:
+        if amount < 0 or amount > seat.stack:
+            raise ValueError("Invalid chip movement")
+        seat.stack -= amount
         seat.committed_this_hand += amount
         if seat.stack == 0:
             seat.all_in = True
@@ -849,13 +882,21 @@ class PokerEngine:
                 return current
         return None
 
-    def _next_active_index(self, index: int) -> int:
+    def _next_funded_index(self, index: int) -> int:
         current = index
         for _ in range(len(self._seats)):
             current = (current + 1) % len(self._seats)
             if self._seats[current].stack > 0:
                 return current
         raise RuntimeError("No active seat found")
+
+    def _next_in_hand_index(self, index: int) -> int:
+        current = index
+        for _ in range(len(self._seats)):
+            current = (current + 1) % len(self._seats)
+            if self._seats[current].in_hand:
+                return current
+        raise RuntimeError("No in-hand seat found")
 
     def _next_occupied_index(self, index: int) -> int | None:
         current = index

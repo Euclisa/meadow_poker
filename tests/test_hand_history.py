@@ -53,6 +53,29 @@ def test_public_live_hand_summary_uses_only_public_information() -> None:
     assert "As Kd" not in summary
 
 
+def test_public_hand_summary_renders_ante_event() -> None:
+    record = HandRecord(
+        hand_number=5,
+        status=HandRecordStatus.IN_PROGRESS,
+        events=(
+            GameEvent("hand_started", {"hand_number": 5}),
+            GameEvent("ante_posted", {"seat_id": "p1", "amount": 25}),
+            GameEvent("ante_posted", {"seat_id": "p2", "amount": 25}),
+            GameEvent("blind_posted", {"seat_id": "p1", "blind": "small", "amount": 50}),
+            GameEvent("blind_posted", {"seat_id": "p2", "blind": "big", "amount": 100}),
+            GameEvent("street_started", {"phase": "preflop", "board_cards": ()}),
+        ),
+        start_public_view=_make_public_view(hand_number=5, phase=GamePhase.PREFLOP, board_cards=()),
+        current_public_view=_make_public_view(hand_number=5, phase=GamePhase.PREFLOP, board_cards=()),
+        ended_in_showdown=False,
+    )
+
+    summary = render_live_public_hand_summary(record)
+
+    assert "Hero posted ante 25" in summary
+    assert "Villain posted ante 25" in summary
+
+
 def test_public_completed_hand_summary_stays_public_without_showdown_cards() -> None:
     record = HandRecord(
         hand_number=4,

@@ -18,6 +18,26 @@ import {
   shortPositionLabel,
 } from "./table-utils.js";
 
+function formatCompactNumber(value) {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) {
+    return "0";
+  }
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1).replace(/\.0$/, "");
+}
+
+function formatAnte(ante, bigBlind) {
+  const anteValue = Number(ante ?? 0);
+  const blindValue = Number(bigBlind ?? 0);
+  if (!Number.isFinite(anteValue) || anteValue <= 0) {
+    return "Off";
+  }
+  if (!Number.isFinite(blindValue) || blindValue <= 0) {
+    return formatChips(anteValue);
+  }
+  return `${formatChips(anteValue)} (${formatCompactNumber(anteValue / blindValue)} BB)`;
+}
+
 export function renderStatusMarkup(snapshot, {
   flash = "",
   flashTone = "info",
@@ -264,6 +284,7 @@ function renderToolbar(
           <span class="chip">${summary.claimed_web_seats}/${summary.web_seats} web</span>
           <span class="chip chip--soft">${summary.llm_seats} bots</span>
           <span class="chip chip--soft">${formatChips(summary.small_blind)} / ${formatChips(summary.big_blind)}</span>
+          <span class="chip chip--soft">Ante ${escapeHtml(formatAnte(summary.ante, summary.big_blind))}</span>
           <span class="chip chip--soft">Stack ${formatChips(summary.starting_stack)}</span>
           <span class="chip chip--soft">${summary.stack_depth} BB</span>
         </div>
@@ -365,6 +386,7 @@ function renderReplayToolbar(snapshot, { coachPending = false, coachReply = "", 
         <span class="chip">Hand ${replay.hand_number}</span>
         <span class="chip chip--soft">Step ${replay.current_step + 1}/${replay.total_steps}</span>
         <span class="chip chip--soft">${formatChips(snapshot.config_summary.small_blind)} / ${formatChips(snapshot.config_summary.big_blind)}</span>
+        <span class="chip chip--soft">Ante ${escapeHtml(formatAnte(snapshot.config_summary.ante, snapshot.config_summary.big_blind))}</span>
       </div>
       <div class="replay-dock__nav">
         <div class="replay-dock__buttons">

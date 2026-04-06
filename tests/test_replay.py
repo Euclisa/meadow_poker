@@ -55,12 +55,16 @@ def test_card_order_codec_round_trip() -> None:
 
 
 def test_engine_can_hydrate_from_hand_state_snapshot() -> None:
-    engine = _make_engine(("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"))
+    engine = PokerEngine.create_table(
+        TableConfig(ante=10, deck_factory=DeckSequenceFactory([("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc")])),
+        [SeatConfig("p1", "P1"), SeatConfig("p2", "P2")],
+    )
     engine.start_next_hand()
     snapshot = engine.export_hand_state_snapshot()
 
     replay_engine = PokerEngine.from_hand_state_snapshot(snapshot)
 
+    assert snapshot.ante == 10
     assert replay_engine.get_public_table_view() == engine.get_public_table_view()
     assert replay_engine.get_acting_seat() == engine.get_acting_seat()
     assert replay_engine.get_player_view("p1") == engine.get_player_view("p1")

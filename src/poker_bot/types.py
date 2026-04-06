@@ -52,6 +52,7 @@ class PlayerUpdateType(str, Enum):
 class TableConfig:
     small_blind: int = 50
     big_blind: int = 100
+    ante: int = 0
     starting_stack: int = 2_000
     min_players: int = 2
     max_players: int = 6
@@ -62,6 +63,8 @@ class TableConfig:
             raise ValueError("Blinds must be positive")
         if self.small_blind > self.big_blind:
             raise ValueError("Small blind cannot exceed big blind")
+        if self.ante < 0:
+            raise ValueError("ante must be non-negative")
         if self.min_players < 2:
             raise ValueError("At least two players are required")
         if self.max_players < self.min_players:
@@ -127,6 +130,7 @@ class PublicTableView:
     small_blind: int
     big_blind: int
     seats: tuple[SeatSnapshot, ...]
+    ante: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +231,7 @@ class HandStateSnapshot:
     big_blind: int
     remaining_deck_order: str
     seats: tuple[HandSeatState, ...]
+    ante: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +280,7 @@ class TelegramTableCreateRequest:
     llm_seat_count: int
     small_blind: int = 50
     big_blind: int = 100
+    ante: int = 0
     starting_stack: int = 2_000
     turn_timeout_seconds: int | None = None
 
@@ -282,6 +288,7 @@ class TelegramTableCreateRequest:
         TableConfig(
             small_blind=self.small_blind,
             big_blind=self.big_blind,
+            ante=self.ante,
             starting_stack=self.starting_stack,
         )
         if self.turn_timeout_seconds is not None and self.turn_timeout_seconds <= 0:
@@ -300,6 +307,7 @@ class TelegramTableStatus:
     total_seats: int
     small_blind: int
     big_blind: int
+    ante: int
     starting_stack: int
     telegram_seats_total: int
     telegram_seats_claimed: int

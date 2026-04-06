@@ -30,6 +30,31 @@ export function formatChips(value) {
   return Number.isFinite(numeric) ? numeric.toLocaleString("en-US") : "0";
 }
 
+function formatCompactNumber(value) {
+  const numeric = Number(value ?? 0);
+  if (!Number.isFinite(numeric)) {
+    return "0";
+  }
+  return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1).replace(/\.0$/, "");
+}
+
+export function formatBbMultiplier(multiplier) {
+  const numeric = Number(multiplier ?? 0);
+  return numeric <= 0 ? "Off" : `${formatCompactNumber(numeric)} BB`;
+}
+
+export function formatAnte(ante, bigBlind) {
+  const anteValue = Number(ante ?? 0);
+  const blindValue = Number(bigBlind ?? 0);
+  if (!Number.isFinite(anteValue) || anteValue <= 0) {
+    return "Off";
+  }
+  if (!Number.isFinite(blindValue) || blindValue <= 0) {
+    return formatChips(anteValue);
+  }
+  return `${formatChips(anteValue)} (${formatCompactNumber(anteValue / blindValue)} BB)`;
+}
+
 export function cardMeta(card) {
   if (!card || card.length < 2) {
     return { rank: "?", suit: "?", symbol: "?", colorClass: "is-spade" };
