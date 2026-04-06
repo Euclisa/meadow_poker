@@ -2,127 +2,34 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from dataclasses import dataclass
-import logging
 import secrets
 from typing import Any, Awaitable, Callable
 
+from meadow.backend.coach_service import BackendCoachService
+from meadow.backend.errors import BackendError
+from meadow.backend.human_agent import BackendHumanAgent
 from meadow.backend.models import (
     ActorRef,
     BackendTableRuntime,
     ManagedTableConfig,
     SeatReservation,
-    ShowdownReveal,
-    ShowdownState,
-    ShowdownWinner,
 )
+from meadow.backend.replay_service import BackendReplayService
+from meadow.backend.runtime_manager import BackendRuntimeManager
+from meadow.backend.runtime_state import BackendRuntimePublisher
 from meadow.backend.serialization import (
     actor_to_dict,
     game_event_to_dict,
     serialize_private_participants,
-    serialize_replay_snapshot,
     serialize_table_snapshot,
     serialize_waiting_tables,
 )
-from meadow.coach import CoachRequestError, TableCoach
 from meadow.config import ThoughtLoggingMode
-from meadow.llm_bot import LLMGameClient, LLMPlayerAgent
-from meadow.player_agent import PlayerAgent
-from meadow.poker.engine import PokerEngine
-from meadow.replay import HandReplayBuildError, HandReplaySession, ReplayAnalysisError, build_replay_decision_spot
-from meadow.table_runner import run_table
+from meadow.llm_bot import LLMGameClient
 from meadow.types import (
-    ActionType,
-    ActionValidationError,
-    DecisionRequest,
-    GameEvent,
     PlayerAction,
-    PlayerUpdate,
-    SeatConfig,
-    TableConfig,
     TelegramTableState,
 )
-
-logger = logging.getLogger(__name__)
-
-
-class BackendError(RuntimeError):
-    def __init__(self, message: str, *, status: int = 400, code: str = "backend_error") -> None:
-        super().__init__(message)
-        self.message = message
-        self.status = status
-        self.code = code
-
-
-@dataclass(slots=True)
-class _PendingState:
-    decision_request: DecisionRequest
-
-
-class BackendHumanAgent(PlayerAgent):
-    def __init__(
-        self,
-        seat_id: str,
-        *,
-        on_state_changed: Callable[[], Awaitable[None]],
-    ) -> None:
-        self.seat_id = seat_id
-        self._on_state_changed = on_state_changed
-        self._pending_state: _PendingState | None = None
-        self._pending_future: asyncio.Future[PlayerAction] | None = None
-
-    @property
-    def pending_decision(self) -> DecisionRequest | None:
-        if self._pending_state is None:
-            return None
-        return self._pending_state.decision_request
-
-    async def request_action(self, decision: DecisionRequest) -> PlayerAction:
-        if self._pending_future is not None:
-            raise RuntimeError("A human action is already pending for this seat")
-        self._pending_state = _PendingState(decision_request=decision)
-        self._pending_future = asyncio.get_running_loop().create_future()
-        await self._on_state_changed()
-        try:
-            return await self._pending_future
-        finally:
-            self._pending_future = None
-            self._pending_state = None
-
-    async def notify_update(self, update: PlayerUpdate) -> None:
-        del update
-        self._pending_state = None
-        await self._on_state_changed()
-
-    async def close(self) -> None:
-        if self._pending_future is not None and not self._pending_future.done():
-            self._pending_future.cancel("agent_closed")
-        self._pending_future = None
-        self._pending_state = None
-        await self._on_state_changed()
-
-    def submit_action(self, action: PlayerAction) -> ActionValidationError | None:
-        if self._pending_state is None or self._pending_future is None or self._pending_future.done():
-            return ActionValidationError("no_pending_action", "There is no pending action for this seat.")
-        legal_action = next(
-            (
-                item
-                for item in self._pending_state.decision_request.legal_actions
-                if item.action_type == action.action_type
-            ),
-            None,
-        )
-        if legal_action is None:
-            return ActionValidationError("illegal_action", "That action is not legal right now.")
-        if action.action_type in {ActionType.BET, ActionType.RAISE}:
-            if action.amount is None:
-                return ActionValidationError("missing_amount", "This action requires a total amount.")
-            if legal_action.min_amount is not None and action.amount < legal_action.min_amount:
-                return ActionValidationError("amount_too_small", f"Amount must be at least {legal_action.min_amount}.")
-            if legal_action.max_amount is not None and action.amount > legal_action.max_amount:
-                return ActionValidationError("amount_too_large", f"Amount must be at most {legal_action.max_amount}.")
-        self._pending_future.set_result(action)
-        return None
 
 
 class LocalTableBackendService:
@@ -139,22 +46,28 @@ class LocalTableBackendService:
         showdown_delay_seconds: float = 0.0,
         on_runtime_published: Callable[[BackendTableRuntime], Awaitable[None]] | None = None,
     ) -> None:
-        self._llm_client_factory = llm_client_factory
-        self._coach_client_factory = coach_client_factory
-        self._llm_name_allocator = llm_name_allocator
-        self._llm_recent_hand_count = llm_recent_hand_count
-        self._llm_thought_logging = (
-            llm_thought_logging if llm_thought_logging is not None else ThoughtLoggingMode.OFF
-        )
-        self._coach_enabled = coach_enabled
-        self._coach_recent_hand_count = coach_recent_hand_count
-        self._showdown_delay_seconds = showdown_delay_seconds
-        self._on_runtime_published = on_runtime_published
         self._tables: dict[str, BackendTableRuntime] = {}
         self._table_conditions: dict[str, asyncio.Condition] = {}
         self._actor_table_ids: dict[tuple[str, str], set[str]] = defaultdict(set)
-        self._waiting_tables_version = 1
-        self._waiting_tables_condition = asyncio.Condition()
+        self._publisher = BackendRuntimePublisher(
+            table_conditions=self._table_conditions,
+            on_runtime_published=on_runtime_published,
+        )
+        self._runtime_manager = BackendRuntimeManager(
+            publisher=self._publisher,
+            llm_client_factory=llm_client_factory,
+            coach_client_factory=coach_client_factory,
+            llm_name_allocator=llm_name_allocator,
+            llm_recent_hand_count=llm_recent_hand_count,
+            llm_thought_logging=(
+                llm_thought_logging if llm_thought_logging is not None else ThoughtLoggingMode.OFF
+            ),
+            coach_enabled=coach_enabled,
+            coach_recent_hand_count=coach_recent_hand_count,
+            showdown_delay_seconds=showdown_delay_seconds,
+        )
+        self._coach_service = BackendCoachService()
+        self._replay_service = BackendReplayService()
 
     async def list_waiting_tables(self) -> dict[str, Any]:
         waiting = tuple(
@@ -162,22 +75,14 @@ class LocalTableBackendService:
             for runtime in self._tables.values()
             if runtime.status == TelegramTableState.WAITING
         )
-        return serialize_waiting_tables(waiting, version=self._waiting_tables_version)
+        return serialize_waiting_tables(waiting, version=self._publisher.waiting_tables_version)
 
     async def wait_for_waiting_tables_version(
         self,
         after_version: int,
         timeout_ms: int,
     ) -> dict[str, Any]:
-        if self._waiting_tables_version <= after_version:
-            try:
-                async with self._waiting_tables_condition:
-                    await asyncio.wait_for(
-                        self._waiting_tables_condition.wait_for(lambda: self._waiting_tables_version > after_version),
-                        timeout=max(timeout_ms, 1) / 1000,
-                    )
-            except TimeoutError:
-                pass
+        await self._publisher.wait_for_waiting_tables_version(after_version, timeout_ms)
         return {
             "snapshot": await self.list_waiting_tables(),
         }
@@ -206,7 +111,7 @@ class LocalTableBackendService:
         self._table_conditions[table_id] = asyncio.Condition()
         self._actor_table_ids[actor.actor_key].add(table_id)
         runtime.status_message = self._waiting_message(runtime)
-        await self._publish_runtime_state(runtime, waiting_tables_changed=True)
+        await self._publisher.publish_runtime_state(runtime, waiting_tables_changed=True)
         return {
             "table_id": table_id,
             "viewer_token": viewer_token,
@@ -235,7 +140,7 @@ class LocalTableBackendService:
         self._actor_table_ids[actor.actor_key].add(table_id)
         runtime.add_activity(kind="state", text=f"{actor.display_name} joined table {table_id}.")
         runtime.status_message = self._waiting_message(runtime)
-        await self._publish_runtime_state(runtime, waiting_tables_changed=True)
+        await self._publisher.publish_runtime_state(runtime, waiting_tables_changed=True)
         return {
             "table_id": table_id,
             "viewer_token": viewer_token,
@@ -254,7 +159,7 @@ class LocalTableBackendService:
         if runtime.human_seat_count > 0 and not runtime.is_full():
             transport_label = "Telegram" if runtime.human_transport == "telegram" else runtime.human_transport
             raise BackendError(f"All {transport_label} seats must be claimed before starting.", status=400)
-        await self._start_runtime(runtime)
+        await self._runtime_manager.start_runtime(runtime)
         return {
             "ok": True,
             "snapshot": serialize_table_snapshot(runtime, viewer_token=viewer_token),
@@ -273,7 +178,7 @@ class LocalTableBackendService:
         self._actor_table_ids[actor.actor_key].discard(table_id)
         runtime.add_activity(kind="state", text=f"{actor.display_name} left table {table_id}.")
         runtime.status_message = self._waiting_message(runtime)
-        await self._publish_runtime_state(runtime, waiting_tables_changed=True)
+        await self._publisher.publish_runtime_state(runtime, waiting_tables_changed=True)
         return {
             "ok": True,
             "snapshot": serialize_table_snapshot(runtime, viewer_token=None),
@@ -292,7 +197,7 @@ class LocalTableBackendService:
         runtime.status = TelegramTableState.CANCELLED
         runtime.status_message = f"Table {table_id} was cancelled."
         runtime.add_activity(kind="state", text=runtime.status_message)
-        await self._publish_runtime_state(runtime, waiting_tables_changed=True)
+        await self._publisher.publish_runtime_state(runtime, waiting_tables_changed=True)
         return {
             "ok": True,
             "snapshot": serialize_table_snapshot(runtime, viewer_token=viewer_token),
@@ -300,7 +205,7 @@ class LocalTableBackendService:
 
     async def get_table_snapshot(self, table_id: str, viewer_token: str | None) -> dict[str, Any]:
         runtime = self._require_table(table_id)
-        authorized = self._authorize_view(runtime, viewer_token)
+        authorized = self._publisher.authorize_view(runtime, viewer_token)
         return serialize_table_snapshot(runtime, viewer_token=authorized)
 
     async def wait_for_table_version(
@@ -311,7 +216,7 @@ class LocalTableBackendService:
         timeout_ms: int,
     ) -> dict[str, Any]:
         runtime = self._require_table(table_id)
-        authorized = self._authorize_view(runtime, viewer_token)
+        authorized = self._publisher.authorize_view(runtime, viewer_token)
         condition = self._table_conditions[table_id]
         if runtime.version <= after_version:
             try:
@@ -357,28 +262,12 @@ class LocalTableBackendService:
     async def request_coach(self, table_id: str, viewer_token: str, question: str) -> dict[str, Any]:
         runtime = self._require_table(table_id)
         reservation = self._require_seated_reservation(runtime, viewer_token)
-        if runtime.status != TelegramTableState.RUNNING:
-            raise BackendError("Coach tips are only available while the table is running.", status=400)
-        if runtime.coach is None:
-            raise BackendError("Coach is not enabled for this table.", status=400)
-        assert reservation.seat_id is not None
-        agent = runtime.human_agents.get(reservation.seat_id)
-        if agent is None or agent.pending_decision is None:
-            raise BackendError("Coach tips are only available on your turn.", status=400)
-        orchestrator = runtime.orchestrator
-        if orchestrator is None or orchestrator.current_hand_record is None:
-            raise BackendError("Current hand context is unavailable.", status=400)
-        try:
-            reply = await runtime.coach.answer_question(
-                table_id=table_id,
-                seat_id=reservation.seat_id,
-                decision=agent.pending_decision,
-                current_hand_record=orchestrator.current_hand_record,
-                question=question,
-            )
-        except CoachRequestError as exc:
-            raise BackendError(str(exc), status=504) from exc
-        return {"ok": True, "reply": reply}
+        return await self._coach_service.request_coach(
+            runtime=runtime,
+            reservation=reservation,
+            table_id=table_id,
+            question=question,
+        )
 
     async def get_replay_snapshot(
         self,
@@ -388,23 +277,14 @@ class LocalTableBackendService:
         step_index: int,
     ) -> dict[str, Any]:
         runtime = self._require_table(table_id)
-        authorized = self._authorize_view(runtime, viewer_token)
-        archive = runtime.find_completed_hand_archive(hand_number)
-        if archive is None:
-            raise BackendError("Completed hand not found.", status=404)
-        viewer = runtime.find_reservation_by_token(authorized)
-        try:
-            replay_session = HandReplaySession(
-                archive.trace,
-                viewer_seat_id=viewer.seat_id if viewer is not None else None,
-            )
-            frame = replay_session.materialize(step_index)
-        except HandReplayBuildError as exc:
-            logger.warning("Replay build failed table=%s hand=%s error=%s", table_id, hand_number, exc)
-            raise BackendError("Replay could not be built for this hand.", status=500) from exc
-        except IndexError as exc:
-            raise BackendError("Replay step is out of range.", status=400) from exc
-        return serialize_replay_snapshot(runtime, archive, frame, viewer_token=authorized)
+        authorized = self._publisher.authorize_view(runtime, viewer_token)
+        return await self._replay_service.get_replay_snapshot(
+            runtime=runtime,
+            viewer_token=authorized,
+            table_id=table_id,
+            hand_number=hand_number,
+            step_index=step_index,
+        )
 
     async def request_replay_coach(
         self,
@@ -413,46 +293,15 @@ class LocalTableBackendService:
         hand_number: int,
         step_index: int,
     ) -> dict[str, Any]:
-        from meadow.hand_history import render_replay_public_hand_summary
-
         runtime = self._require_table(table_id)
         reservation = self._require_seated_reservation(runtime, viewer_token)
-        if runtime.coach is None:
-            raise BackendError("Coach is not enabled for this table.", status=400)
-        assert reservation.seat_id is not None
-        archive = runtime.find_completed_hand_archive(hand_number)
-        if archive is None:
-            raise BackendError("Completed hand not found.", status=404)
-        try:
-            spot = build_replay_decision_spot(
-                archive.trace,
-                step_index=step_index,
-                viewer_seat_id=reservation.seat_id,
-            )
-        except HandReplayBuildError as exc:
-            raise BackendError("Replay could not be built for this hand.", status=500) from exc
-        except IndexError as exc:
-            raise BackendError("Replay step is out of range.", status=400) from exc
-        except ReplayAnalysisError as exc:
-            raise BackendError(str(exc), status=400) from exc
-        replay_hand_summary = render_replay_public_hand_summary(
-            hand_number=archive.record.hand_number,
-            events=spot.frame.visible_events,
-            start_public_view=archive.record.start_public_view,
-            current_public_view=spot.frame.public_table_view,
+        return await self._replay_service.request_replay_coach(
+            runtime=runtime,
+            reservation=reservation,
+            table_id=table_id,
+            hand_number=hand_number,
+            step_index=step_index,
         )
-        try:
-            reply = await runtime.coach.analyze_replay_spot(
-                table_id=table_id,
-                seat_id=reservation.seat_id,
-                decision=spot.decision,
-                replay_hand_summary=replay_hand_summary,
-                next_transition=spot.next_transition,
-                replay_hand_number=archive.record.hand_number,
-            )
-        except CoachRequestError as exc:
-            raise BackendError(str(exc), status=504) from exc
-        return {"ok": True, "reply": reply}
 
     async def get_actor_tables(self, actor: ActorRef) -> dict[str, Any]:
         table_ids = sorted(self._actor_table_ids.get(actor.actor_key, set()))
@@ -486,136 +335,6 @@ class LocalTableBackendService:
             "actor": actor_to_dict(actor),
             "tables": items,
         }
-
-    async def _start_runtime(self, runtime: BackendTableRuntime) -> None:
-        seat_configs: list[SeatConfig] = []
-        player_agents: dict[str, PlayerAgent] = {}
-
-        async def publish_state() -> None:
-            await self._publish_runtime_state(runtime)
-
-        async def handle_turn_timeout(decision: DecisionRequest, action: PlayerAction) -> None:
-            runtime.add_activity(
-                kind="state",
-                text=f"Time expired. Auto-{self._format_action_label(action)}.",
-            )
-            await self._publish_runtime_state(runtime)
-
-        for reservation in runtime.reservations:
-            if not reservation.is_seated or reservation.seat_id is None:
-                continue
-            seat_configs.append(SeatConfig(seat_id=reservation.seat_id, name=reservation.actor.display_name))
-            human_agent = BackendHumanAgent(seat_id=reservation.seat_id, on_state_changed=publish_state)
-            player_agents[reservation.seat_id] = human_agent
-            runtime.human_agents[reservation.seat_id] = human_agent
-
-        for index in range(1, runtime.llm_seat_count + 1):
-            seat_id = f"llm_{index}"
-            seat_configs.append(SeatConfig(seat_id=seat_id, name=self._allocate_llm_name()))
-            player_agents[seat_id] = LLMPlayerAgent(
-                seat_id=seat_id,
-                client=self._require_llm_client_factory()(),
-                recent_hand_count=self._llm_recent_hand_count,
-                thought_logging=self._llm_thought_logging,
-            )
-
-        engine = PokerEngine.create_table(
-            TableConfig(
-                small_blind=runtime.config.small_blind,
-                big_blind=runtime.config.big_blind,
-                ante=runtime.config.ante,
-                starting_stack=runtime.config.starting_stack,
-                max_players=runtime.total_seats,
-            ),
-            seat_configs,
-        )
-        from meadow.orchestrator import GameOrchestrator
-
-        orchestrator = GameOrchestrator(
-            engine,
-            player_agents,
-            turn_timeout_seconds=runtime.config.turn_timeout_seconds,
-            on_turn_state_changed=publish_state,
-            on_turn_timeout=handle_turn_timeout,
-        )
-        runtime.engine = engine
-        runtime.player_agents = player_agents
-        runtime.orchestrator = orchestrator
-        runtime.coach = self._build_table_coach()
-        runtime.status = TelegramTableState.RUNNING
-        runtime.status_message = f"Table {runtime.table_id} started with {runtime.total_seats} seats."
-        runtime.add_activity(kind="state", text=runtime.status_message)
-        await self._publish_runtime_state(runtime, waiting_tables_changed=True)
-        runtime.orchestrator_task = asyncio.create_task(self._run_runtime(runtime))
-
-    async def _run_runtime(self, runtime: BackendTableRuntime) -> None:
-        assert runtime.orchestrator is not None
-
-        async def after_hand(result: Any) -> None:
-            if result.completed_hand is not None and runtime.coach is not None:
-                await runtime.coach.record_completed_hand(result.completed_hand)
-            if not result.ended_in_showdown:
-                return
-            runtime.showdown_state = self._build_showdown_state(result)
-            await self._publish_runtime_state(runtime)
-            if self._showdown_delay_seconds > 0:
-                await asyncio.sleep(self._showdown_delay_seconds)
-                runtime.showdown_state = None
-                await self._publish_runtime_state(runtime)
-
-        try:
-            await run_table(
-                runtime.orchestrator,
-                max_hands=runtime.config.max_hands_per_table,
-                close_agents=True,
-                after_hand=after_hand,
-            )
-        finally:
-            logger.info("Backend table %s completed", runtime.table_id)
-            runtime.status = TelegramTableState.COMPLETED
-            runtime.status_message = f"Table {runtime.table_id} has completed."
-            runtime.add_activity(kind="state", text=runtime.status_message)
-            await self._publish_runtime_state(runtime, waiting_tables_changed=True)
-
-    async def _publish_runtime_state(
-        self,
-        runtime: BackendTableRuntime,
-        *,
-        waiting_tables_changed: bool = False,
-    ) -> None:
-        new_events: tuple[GameEvent, ...] = ()
-        orchestrator = runtime.orchestrator
-        if orchestrator is not None:
-            if len(orchestrator.event_log) > runtime._published_event_index:
-                new_events = tuple(orchestrator.event_log[runtime._published_event_index :])
-                runtime._published_event_index = len(orchestrator.event_log)
-        runtime.version += 1
-        runtime._versioned_events.append((runtime.version, new_events))
-        condition = self._table_conditions.get(runtime.table_id)
-        if condition is not None:
-            async with condition:
-                condition.notify_all()
-        if waiting_tables_changed:
-            self._waiting_tables_version += 1
-            async with self._waiting_tables_condition:
-                self._waiting_tables_condition.notify_all()
-        if self._on_runtime_published is not None:
-            await self._on_runtime_published(runtime)
-
-    def _authorize_view(self, runtime: BackendTableRuntime, viewer_token: str | None) -> str | None:
-        if runtime.find_reservation_by_token(viewer_token) is not None:
-            return viewer_token
-        return None
-
-    def _build_table_coach(self) -> TableCoach | None:
-        if not self._coach_enabled:
-            return None
-        if self._coach_client_factory is None:
-            raise RuntimeError("Coach client factory is required when coach is enabled")
-        return TableCoach(
-            self._coach_client_factory(),
-            recent_hand_count=self._coach_recent_hand_count,
-        )
 
     def _require_table(self, table_id: str) -> BackendTableRuntime:
         runtime = self._tables.get(table_id)
@@ -652,38 +371,6 @@ class LocalTableBackendService:
         suffix = "" if remaining == 1 else "s"
         return f"Waiting for {remaining} more player{suffix}."
 
-    def _build_showdown_state(self, result: Any) -> ShowdownState:
-        return ShowdownState(
-            revealed_seats=tuple(
-                ShowdownReveal(
-                    seat_id=event.payload["seat_id"],
-                    hole_cards=tuple(event.payload["hole_cards"]),
-                )
-                for event in result.events
-                if event.event_type == "showdown_revealed"
-            ),
-            winners=tuple(
-                ShowdownWinner(
-                    seat_id=event.payload["seat_id"],
-                    amount=event.payload["amount"],
-                )
-                for event in result.events
-                if event.event_type == "pot_awarded"
-            ),
-        )
-
-    def _allocate_llm_name(self) -> str:
-        if self._llm_name_allocator is None:
-            from meadow.naming import BotNameAllocator
-
-            self._llm_name_allocator = BotNameAllocator()
-        return self._llm_name_allocator.allocate()
-
-    def _require_llm_client_factory(self) -> Callable[[], LLMGameClient]:
-        if self._llm_client_factory is None:
-            raise RuntimeError("LLM client factory is required to create LLM seats")
-        return self._llm_client_factory
-
     @staticmethod
     def _generate_table_id() -> str:
         return secrets.token_hex(3)
@@ -695,12 +382,6 @@ class LocalTableBackendService:
     @staticmethod
     def _allocate_human_seat_id(prefix: str, index: int) -> str:
         return f"{prefix}_{index}" if prefix not in {"p"} else f"p{index}"
-
-    @staticmethod
-    def _format_action_label(action: PlayerAction) -> str:
-        if action.amount is None:
-            return action.action_type.value
-        return f"{action.action_type.value} {action.amount}"
 
 
 class LocalBackendClient:
