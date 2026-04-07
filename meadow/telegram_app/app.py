@@ -140,6 +140,8 @@ class TelegramApp:
                     "/start_game - creator starts a full waiting table",
                     "/leave_table - leave a waiting table",
                     "/cancel_table - creator cancels a waiting table",
+                    "/sit_out - sit out upcoming hands",
+                    "/sit_in - return for upcoming hands",
                     "/coach <question> - ask the table coach on your turn",
                     "/help - show this help",
                 ]
@@ -275,6 +277,32 @@ class TelegramApp:
             return
         await self._notify_waiting_participants(result.get("participants", result["snapshot"].get("participants", ())), f"Table {entry['table_id']} was cancelled.")
 
+    async def handle_sit_out_command(self, *, user_id: int, chat_id: int) -> None:
+        entry = await self._running_actor_table(user_id=user_id, chat_id=chat_id, display_name=str(user_id))
+        if entry is None:
+            await self._send_message(chat_id, "Sit out is only available while your table is running.", await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
+            return
+        try:
+            result = await self.backend.sit_out(entry["table_id"], entry["viewer_token"])
+        except BackendError as exc:
+            await self._send_message(chat_id, exc.message, await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
+            return
+        await self._send_message(chat_id, "You are now sitting out.", await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
+        await self._ensure_watchers(result["snapshot"])
+
+    async def handle_sit_in_command(self, *, user_id: int, chat_id: int) -> None:
+        entry = await self._running_actor_table(user_id=user_id, chat_id=chat_id, display_name=str(user_id))
+        if entry is None:
+            await self._send_message(chat_id, "Sit in is only available while your table is running.", await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
+            return
+        try:
+            result = await self.backend.sit_in(entry["table_id"], entry["viewer_token"])
+        except BackendError as exc:
+            await self._send_message(chat_id, exc.message, await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
+            return
+        await self._send_message(chat_id, "You are back in for upcoming hands.", await self._build_lobby_keyboard(user_id=user_id, chat_id=chat_id))
+        await self._ensure_watchers(result["snapshot"])
+
     async def handle_callback_query(self, *, user_id: int, chat_id: int, data: str) -> bool:
         del user_id, chat_id, data
         return False
@@ -380,6 +408,14 @@ class TelegramApp:
         async def on_cancel_table(message: Message) -> None:
             await self.handle_cancel_table_command(user_id=message.from_user.id, chat_id=message.chat.id)
 
+        @router.message(Command("sit_out"))
+        async def on_sit_out(message: Message) -> None:
+            await self.handle_sit_out_command(user_id=message.from_user.id, chat_id=message.chat.id)
+
+        @router.message(Command("sit_in"))
+        async def on_sit_in(message: Message) -> None:
+            await self.handle_sit_in_command(user_id=message.from_user.id, chat_id=message.chat.id)
+
         @router.message(Command("coach"))
         async def on_coach(message: Message) -> None:
             parts = (message.text or "").split(maxsplit=1)
@@ -418,6 +454,13 @@ class TelegramApp:
         if entry is None:
             return False
         snapshot = await self.backend.get_table_snapshot(entry["table_id"], entry["viewer_token"])
+        normalized = text.strip().lower()
+        if normalized == "sit out":
+            await self.handle_sit_out_command(user_id=user_id, chat_id=chat_id)
+            return True
+        if normalized == "sit in":
+            await self.handle_sit_in_command(user_id=user_id, chat_id=chat_id)
+            return True
         pending = snapshot.get("pending_decision")
         if pending is None:
             return False
@@ -850,10 +893,14 @@ class TelegramApp:
     def _format_status(self, snapshot: dict[str, Any]) -> str:
         summary = snapshot["config_summary"]
         joined = ", ".join(participant["external_id"] for participant in snapshot.get("participants", ()) if participant.get("transport") == "telegram") or "-"
+        public_table = snapshot.get("public_table") or {}
+        controls = snapshot.get("controls") or {}
         return "\n".join(
             [
                 f"Table {snapshot['table_id']}",
                 f"Status: {snapshot['status']}",
+                f"Table state: {public_table.get('phase', 'waiting')}",
+                f"Seat state: {'sitting_out' if controls.get('is_sitting_out') else 'active'}",
                 f"Seats: {summary['total_seats']}",
                 f"Blinds: {summary['small_blind']}/{summary['big_blind']}",
                 f"Ante: {self._format_ante(summary['ante'])}",
@@ -871,6 +918,7 @@ class TelegramApp:
         if pending is None:
             return None
         labels = [[item["action_type"].replace("_", " ").title()] for item in pending.get("legal_actions", ())]
+        labels.append(["Sit Out"])
         return self._make_reply_keyboard(labels)
 
     @staticmethod
@@ -976,6 +1024,8 @@ class TelegramApp:
             "start game": self._handle_start_game_from_button,
             "leave table": self._handle_leave_table_from_button,
             "cancel table": self._handle_cancel_table_from_button,
+            "sit out": self._handle_sit_out_from_button,
+            "sit in": self._handle_sit_in_from_button,
             "help": self._handle_help_from_button,
         }
         return mapping.get(normalized)
@@ -994,6 +1044,14 @@ class TelegramApp:
 
     async def _handle_cancel_table_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
         await self.handle_cancel_table_command(user_id=user_id, chat_id=chat_id)
+
+    async def _handle_sit_out_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
+        del display_name
+        await self.handle_sit_out_command(user_id=user_id, chat_id=chat_id)
+
+    async def _handle_sit_in_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
+        del display_name
+        await self.handle_sit_in_command(user_id=user_id, chat_id=chat_id)
 
     async def _handle_help_from_button(self, *, user_id: int, chat_id: int, display_name: str) -> None:
         del user_id, display_name
@@ -1024,7 +1082,7 @@ class TelegramApp:
             else:
                 labels = [["My Table"], ["Leave Table"], ["Help"]]
         elif entry["status"] == TelegramTableState.RUNNING.value:
-            labels = [["My Table"], ["Leave Table"], ["Help"]]
+            labels = [["My Table"], ["Sit In" if entry.get("is_sitting_out", False) else "Sit Out"], ["Help"]]
         else:
             labels = [["Create Table"], ["Help"]]
         return self._make_reply_keyboard(labels)

@@ -130,3 +130,49 @@ def test_remote_telegram_watchers_deliver_turn_prompt_and_completion_updates() -
         )
 
     asyncio.run(scenario())
+
+
+def test_remote_telegram_running_keyboard_switches_between_sit_out_and_sit_in() -> None:
+    async def scenario() -> None:
+        service = make_backend_service()
+        messages: list[tuple[int, str, object | None]] = []
+
+        async def send_message(chat_id: int, text: str, reply_markup: object | None = None) -> None:
+            messages.append((chat_id, text, reply_markup))
+
+        app = TelegramApp(
+            TelegramAppConfig(
+                bot_username="test_bot",
+                llm=LLMSettings(model="gpt-test", api_key="test"),
+                coach=CoachSettings(enabled=False),
+                max_hands_per_table=5,
+            ),
+            send_message=send_message,
+            llm_name_allocator=BotNameAllocator(names=("Nova",), seed=1),
+            backend=make_http_backend_client(service),
+        )
+        await complete_create_flow(app, total_seats="2", llm_seats="0", turn_timeout="30", idle_close="300")
+
+        table_id = next(text.split()[2].rstrip(".") for _chat, text, _markup in messages if "Created table" in text)
+        await app.handle_join_command(user_id=2, chat_id=202, display_name="Bob", table_id=table_id)
+        await app.handle_start_game_command(user_id=1, chat_id=101)
+        await asyncio.sleep(0.05)
+
+        running_keyboard = await app._build_lobby_keyboard(user_id=1, chat_id=101)
+        assert running_keyboard == [["My Table"], ["Sit Out"], ["Help"]]
+
+        await app.handle_sit_out_command(user_id=1, chat_id=101)
+        await asyncio.sleep(0.05)
+
+        sitting_out_keyboard = await app._build_lobby_keyboard(user_id=1, chat_id=101)
+        assert sitting_out_keyboard == [["My Table"], ["Sit In"], ["Help"]]
+
+        for watcher in app._watchers.values():
+            if watcher.task is not None:
+                watcher.task.cancel()
+        await asyncio.gather(
+            *(watcher.task for watcher in app._watchers.values() if watcher.task is not None),
+            return_exceptions=True,
+        )
+
+    asyncio.run(scenario())

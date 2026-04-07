@@ -61,8 +61,8 @@ def _make_public_view(*, hand_number: int, phase: GamePhase, board_cards: tuple[
         small_blind=50,
         big_blind=100,
         seats=(
-            SeatSnapshot("p1", "Hero", 1900, 100, False, False, True, "dealer"),
-            SeatSnapshot("p2", "Villain", 2100, 100, False, False, True, "big_blind"),
+            SeatSnapshot("p1", "Hero", 1900, 100, False, False, False, True, "dealer"),
+            SeatSnapshot("p2", "Villain", 2100, 100, False, False, False, True, "big_blind"),
         ),
     )
 

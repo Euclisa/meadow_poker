@@ -12,6 +12,10 @@ class PlayerAgent(ABC):
     def keeps_table_alive(self) -> bool:
         return True
 
+    @property
+    def auto_sit_out_on_timeout(self) -> bool:
+        return False
+
     @abstractmethod
     async def request_action(self, decision: DecisionRequest) -> PlayerAction:
         raise NotImplementedError

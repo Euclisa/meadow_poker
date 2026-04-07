@@ -266,6 +266,41 @@ class LocalTableBackendService:
             }
         return {"ok": True}
 
+    async def sit_out(self, table_id: str, viewer_token: str) -> dict[str, Any]:
+        runtime = self._require_table(table_id)
+        reservation = self._require_seated_reservation(runtime, viewer_token)
+        if runtime.status != TelegramTableState.RUNNING:
+            raise BackendError("Sit out is only available while the table is running.", status=400)
+        if reservation.seat_id is None or runtime.orchestrator is None:
+            raise BackendError("This seat cannot be managed right now.", status=400)
+        result = await runtime.orchestrator.sit_out_seat(reservation.seat_id, reason="manual")
+        if not result.ok:
+            assert result.error is not None
+            raise BackendError(result.error.message, status=400, code=result.error.code)
+        return {
+            "ok": True,
+            "snapshot": serialize_table_snapshot(runtime, viewer_token=viewer_token),
+        }
+
+    async def sit_in(self, table_id: str, viewer_token: str) -> dict[str, Any]:
+        runtime = self._require_table(table_id)
+        reservation = self._require_seated_reservation(runtime, viewer_token)
+        if runtime.status != TelegramTableState.RUNNING:
+            raise BackendError("Sit in is only available while the table is running.", status=400)
+        if reservation.seat_id is None or runtime.orchestrator is None or runtime.engine is None:
+            raise BackendError("This seat cannot be managed right now.", status=400)
+        player_view = runtime.engine.get_player_view(reservation.seat_id)
+        if player_view.stack <= 0:
+            raise BackendError("Busted-out seats cannot sit back in.", status=400, code="no_chips")
+        result = await runtime.orchestrator.sit_in_seat(reservation.seat_id, reason="manual")
+        if not result.ok:
+            assert result.error is not None
+            raise BackendError(result.error.message, status=400, code=result.error.code)
+        return {
+            "ok": True,
+            "snapshot": serialize_table_snapshot(runtime, viewer_token=viewer_token),
+        }
+
     async def request_coach(self, table_id: str, viewer_token: str, question: str) -> dict[str, Any]:
         runtime = self._require_table(table_id)
         reservation = self._require_seated_reservation(runtime, viewer_token)
@@ -327,6 +362,7 @@ class LocalTableBackendService:
                     "viewer_token": reservation.viewer_token,
                     "seat_id": reservation.seat_id,
                     "is_joined": reservation.is_seated,
+                    "is_sitting_out": self._reservation_is_sitting_out(runtime, reservation),
                     "is_creator": runtime.is_creator_token(reservation.viewer_token),
                     "message": runtime.status_message,
                     "config_summary": {
@@ -429,6 +465,15 @@ class LocalTableBackendService:
     def _allocate_human_seat_id(prefix: str, index: int) -> str:
         return f"{prefix}_{index}" if prefix not in {"p"} else f"p{index}"
 
+    @staticmethod
+    def _reservation_is_sitting_out(runtime: BackendTableRuntime, reservation: SeatReservation) -> bool:
+        if runtime.engine is None or reservation.seat_id is None:
+            return False
+        return any(
+            seat.seat_id == reservation.seat_id and seat.is_sitting_out
+            for seat in runtime.engine.get_public_table_view().seats
+        )
+
 
 class LocalBackendClient:
     def __init__(self, service: LocalTableBackendService) -> None:
@@ -473,6 +518,12 @@ class LocalBackendClient:
 
     async def submit_action(self, table_id: str, viewer_token: str, action: PlayerAction) -> dict[str, Any]:
         return await self._service.submit_action(table_id, viewer_token, action)
+
+    async def sit_out(self, table_id: str, viewer_token: str) -> dict[str, Any]:
+        return await self._service.sit_out(table_id, viewer_token)
+
+    async def sit_in(self, table_id: str, viewer_token: str) -> dict[str, Any]:
+        return await self._service.sit_in(table_id, viewer_token)
 
     async def request_coach(self, table_id: str, viewer_token: str, question: str) -> dict[str, Any]:
         return await self._service.request_coach(table_id, viewer_token, question)

@@ -210,3 +210,41 @@ def test_http_backend_public_private_snapshots_and_bot_only_tables() -> None:
         assert completed["completed_hands"][0]["hand_number"] == 1
 
     asyncio.run(scenario())
+
+
+def test_http_backend_can_sit_out_and_sit_back_in() -> None:
+    async def scenario() -> None:
+        service = make_backend_service()
+        client = make_http_backend_client(service)
+        creator = ActorRef(transport="web", external_id="alice", display_name="Alice")
+        joiner = ActorRef(transport="web", external_id="bob", display_name="Bob")
+        created = await client.create_table(
+            creator,
+            ManagedTableConfig(
+                total_seats=2,
+                llm_seat_count=0,
+                small_blind=50,
+                big_blind=100,
+                turn_timeout_seconds=30,
+                idle_close_seconds=300,
+                human_transport="web",
+                human_seat_prefix="web",
+                max_hands_per_table=5,
+            ),
+        )
+        joined = await client.join_table(joiner, created["table_id"])
+        await client.start_table(creator, created["table_id"], created["viewer_token"])
+
+        await client.sit_out(created["table_id"], created["viewer_token"])
+
+        paused = await client.get_table_snapshot(created["table_id"], created["viewer_token"])
+        assert paused["controls"]["is_sitting_out"] is True
+        assert any(event.get("event_type") == "seat_sat_out" for event in paused["recent_events"])
+
+        await client.sit_in(created["table_id"], created["viewer_token"])
+
+        resumed = await client.get_table_snapshot(created["table_id"], created["viewer_token"])
+        assert resumed["controls"]["is_sitting_out"] is False
+        assert joined["viewer_token"] != created["viewer_token"]
+
+    asyncio.run(scenario())

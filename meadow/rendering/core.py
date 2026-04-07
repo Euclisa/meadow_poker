@@ -151,6 +151,14 @@ def _render_event(event: GameEvent, *, seat_names: dict[str, str] | None = None)
     if event.event_type == "showdown_revealed":
         cards = " ".join(payload.get("hole_cards", ())) or "-"
         return f"{name} showed {cards}: {payload['hand_label']}"
+    if event.event_type == "seat_sat_out":
+        return f"{name} is sitting out"
+    if event.event_type == "seat_sat_in":
+        return f"{name} is back in"
+    if event.event_type == "table_paused":
+        return "Table paused (waiting for players)"
+    if event.event_type == "table_resumed":
+        return "Table resumed"
     if event.event_type == "table_completed":
         return f"Table completed ({payload.get('reason', 'unknown')})"
     if event.event_type == "chips_refunded":

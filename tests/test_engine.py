@@ -464,6 +464,59 @@ def test_manual_automatic_progress_steps_all_in_runout_one_transition_at_a_time(
     assert engine.resolve_automatic_step().advanced is False
 
 
+def test_sitting_out_seat_is_skipped_when_starting_next_hand() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Qd", "Ad", "Ks", "Qc", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(2_000, 2_000, 2_000),
+    )
+
+    sit_out = engine.sit_out_seat("p2", reason="manual")
+    result = engine.start_next_hand()
+
+    assert sit_out.ok is True
+    assert result.ok is True
+    seats = {seat.seat_id: seat for seat in engine.get_public_table_view().seats}
+    assert seats["p2"].is_sitting_out is True
+    assert seats["p2"].in_hand is False
+    assert engine.get_player_view("p2").hole_cards == ()
+
+
+def test_start_next_hand_waits_for_players_when_only_sitting_out_blocks_start() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(2_000, 2_000),
+    )
+
+    assert engine.sit_out_seat("p2", reason="manual").ok is True
+    result = engine.start_next_hand()
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.code == "waiting_for_players"
+    assert engine.get_phase() == GamePhase.WAITING_FOR_PLAYERS
+
+    assert engine.sit_in_seat("p2", reason="manual").ok is True
+    resumed = engine.start_next_hand()
+    assert resumed.ok is True
+
+
+def test_sit_out_during_active_hand_folds_without_refunding_committed_chips() -> None:
+    engine = make_engine(
+        deck=("As", "Kh", "Ad", "Kd", "2c", "7d", "8h", "9s", "Tc"),
+        stacks=(2_000, 2_000),
+    )
+    engine.start_next_hand(auto_resolve=False)
+
+    result = engine.sit_out_seat("p1", reason="manual", auto_resolve=False)
+
+    assert result.ok is True
+    assert [event.event_type for event in result.events] == ["action_applied", "seat_sat_out"]
+    seat_map = {seat.seat_id: seat for seat in engine.get_public_table_view().seats}
+    assert seat_map["p1"].is_sitting_out is True
+    assert seat_map["p1"].contribution == 50
+    assert seat_map["p1"].folded is True
+
+
 # ---------------------------------------------------------------------------
 # Edge case: hand evaluation
 # ---------------------------------------------------------------------------

@@ -18,8 +18,8 @@ def make_decision() -> DecisionRequest:
         small_blind=50,
         big_blind=100,
         seats=(
-            SeatSnapshot("p1", "Alice", 1900, 50, False, False, True, "dealer"),
-            SeatSnapshot("p2", "Bob", 1800, 100, False, False, True, "bb"),
+            SeatSnapshot("p1", "Alice", 1900, 50, False, False, False, True, "dealer"),
+            SeatSnapshot("p2", "Bob", 1800, 100, False, False, False, True, "bb"),
         ),
     )
     player_view = PlayerView(
@@ -100,5 +100,27 @@ def test_backend_human_agent_clears_pending_state_on_update() -> None:
         assert agent.pending_decision is None
         await agent.close()
         pending_task.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_backend_human_agent_can_cancel_pending_action() -> None:
+    async def on_state_changed() -> None:
+        return None
+
+    async def scenario() -> None:
+        agent = BackendHumanAgent("p1", on_state_changed=on_state_changed)
+        pending_task = asyncio.create_task(agent.request_action(make_decision()))
+        await asyncio.sleep(0)
+
+        assert agent.cancel_pending(reason="manual_sit_out") is True
+
+        try:
+            await pending_task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("Expected the pending task to be cancelled")
+        await agent.close()
 
     asyncio.run(scenario())

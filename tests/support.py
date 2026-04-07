@@ -173,6 +173,10 @@ class _InMemoryResponseTask:
                 return await self._service.leave_table(_actor_from_payload(self._json_body["actor"]), table_id, str(self._json_body["viewer_token"]))
             if self._method == "POST" and segments[2:] == ["cancel"]:
                 return await self._service.cancel_table(_actor_from_payload(self._json_body["actor"]), table_id, str(self._json_body["viewer_token"]))
+            if self._method == "POST" and segments[2:] == ["sit-out"]:
+                return await self._service.sit_out(table_id, str(self._json_body["viewer_token"]))
+            if self._method == "POST" and segments[2:] == ["sit-in"]:
+                return await self._service.sit_in(table_id, str(self._json_body["viewer_token"]))
             if self._method == "GET" and len(segments) == 2:
                 return await self._service.get_table_snapshot(table_id, self._params.get("viewer_token"))
             if self._method == "GET" and segments[2:] == ["wait"]:

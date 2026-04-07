@@ -41,6 +41,7 @@ class _SeatState:
     name: str
     stack: int
     hole_cards: list[str] = field(default_factory=list)
+    is_sitting_out: bool = False
     folded: bool = False
     all_in: bool = False
     in_hand: bool = False
@@ -54,7 +55,7 @@ class _SeatState:
         self.hole_cards = []
         self.folded = False
         self.all_in = False
-        self.in_hand = self.stack > 0
+        self.in_hand = self.stack > 0 and not self.is_sitting_out
         self.committed_this_street = 0
         self.committed_this_hand = 0
         self.has_acted_this_round = False
@@ -133,6 +134,7 @@ class PokerEngine:
             seat = engine._require_seat(snapshot_seat.seat_id)
             seat.stack = snapshot_seat.stack
             seat.hole_cards = list(snapshot_seat.hole_cards)
+            seat.is_sitting_out = snapshot_seat.is_sitting_out
             seat.folded = snapshot_seat.folded
             seat.all_in = snapshot_seat.all_in
             seat.in_hand = snapshot_seat.in_hand
@@ -283,6 +285,17 @@ class PokerEngine:
                 message="Not enough funded players remain to start another hand",
                 reason="not_enough_players",
             )
+        if not self.can_start_next_hand():
+            self._phase = GamePhase.WAITING_FOR_PLAYERS
+            self._acting_index = None
+            return ActionResult(
+                ok=False,
+                error=ActionValidationError(
+                    code="waiting_for_players",
+                    message="Not enough active players are available to start another hand",
+                ),
+                state_changed=True,
+            )
 
         try:
             self._deck = self._deck_factory.create_hand_deck(self._hand_number + 1)
@@ -304,7 +317,7 @@ class PokerEngine:
         self._last_full_raise_to = 0
         self._acting_index = None
 
-        self._dealer_index = self._next_funded_index(self._dealer_index)
+        self._dealer_index = self._next_eligible_index(self._dealer_index)
         self._assign_positions()
 
         events: list[GameEvent] = [
@@ -474,11 +487,89 @@ class PokerEngine:
         )
         return ActionResult(ok=True, events=tuple(events), state_changed=True)
 
+    def sit_out_seat(
+        self,
+        seat_id: str,
+        *,
+        reason: str | None = None,
+        auto_resolve: bool = True,
+    ) -> ActionResult:
+        seat = self._require_seat(seat_id)
+        if seat.is_sitting_out:
+            return self._invalid("already_sitting_out", "This seat is already sitting out")
+
+        seat.is_sitting_out = True
+        events: list[GameEvent] = []
+
+        if self._phase in {
+            GamePhase.PREFLOP,
+            GamePhase.FLOP,
+            GamePhase.TURN,
+            GamePhase.RIVER,
+        } and seat.in_hand and not seat.folded and not seat.all_in:
+            seat.folded = True
+            seat.has_acted_this_round = True
+            seat.last_action_bet_level = self._current_bet
+            events.append(
+                GameEvent("action_applied", {"seat_id": seat_id, "action": ActionType.FOLD.value})
+            )
+            if self.get_acting_seat() == seat_id:
+                self._acting_index = self._next_action_index_from(self._index_of_seat(seat_id))
+            if auto_resolve:
+                events.extend(self.drain_automatic_progress())
+        elif self._phase in {
+            GamePhase.WAITING_FOR_PLAYERS,
+            GamePhase.READY_FOR_HAND,
+            GamePhase.HAND_COMPLETE,
+        }:
+            self.refresh_table_readiness()
+
+        events.append(GameEvent("seat_sat_out", self._seat_participation_payload(seat_id, reason=reason)))
+        return ActionResult(ok=True, events=tuple(events), state_changed=True)
+
+    def sit_in_seat(self, seat_id: str, *, reason: str | None = None) -> ActionResult:
+        seat = self._require_seat(seat_id)
+        if not seat.is_sitting_out:
+            return self._invalid("not_sitting_out", "This seat is already active")
+
+        seat.is_sitting_out = False
+        if self._phase in {
+            GamePhase.WAITING_FOR_PLAYERS,
+            GamePhase.READY_FOR_HAND,
+            GamePhase.HAND_COMPLETE,
+        }:
+            self.refresh_table_readiness()
+        return ActionResult(
+            ok=True,
+            events=(GameEvent("seat_sat_in", self._seat_participation_payload(seat_id, reason=reason)),),
+            state_changed=True,
+        )
+
     def is_hand_complete(self) -> bool:
         return self._phase == GamePhase.HAND_COMPLETE
 
     def is_table_active(self) -> bool:
-        return sum(1 for seat in self._seats if seat.stack > 0) >= self.config.min_players
+        return self._funded_seat_count() >= self.config.min_players
+
+    def can_start_next_hand(self) -> bool:
+        return self._eligible_seat_count() >= self.config.min_players
+
+    def refresh_table_readiness(self) -> bool:
+        if self._phase == GamePhase.TABLE_COMPLETE:
+            return False
+        if self._phase in {
+            GamePhase.PREFLOP,
+            GamePhase.FLOP,
+            GamePhase.TURN,
+            GamePhase.RIVER,
+            GamePhase.SHOWDOWN,
+        }:
+            return False
+        next_phase = GamePhase.READY_FOR_HAND if self.can_start_next_hand() else GamePhase.WAITING_FOR_PLAYERS
+        changed = self._phase != next_phase
+        self._phase = next_phase
+        self._acting_index = None
+        return changed
 
     def has_pending_automatic_progress(self) -> bool:
         return self._next_automatic_transition_kind() is not None
@@ -890,6 +981,15 @@ class PokerEngine:
                 return current
         raise RuntimeError("No active seat found")
 
+    def _next_eligible_index(self, index: int) -> int:
+        current = index
+        for _ in range(len(self._seats)):
+            current = (current + 1) % len(self._seats)
+            seat = self._seats[current]
+            if seat.stack > 0 and not seat.is_sitting_out:
+                return current
+        raise RuntimeError("No eligible seat found")
+
     def _next_in_hand_index(self, index: int) -> int:
         current = index
         for _ in range(len(self._seats)):
@@ -909,6 +1009,12 @@ class PokerEngine:
     def _active_indices(self) -> list[int]:
         return [index for index, seat in enumerate(self._seats) if seat.in_hand]
 
+    def _funded_seat_count(self) -> int:
+        return sum(1 for seat in self._seats if seat.stack > 0)
+
+    def _eligible_seat_count(self) -> int:
+        return sum(1 for seat in self._seats if seat.stack > 0 and not seat.is_sitting_out)
+
     def _invalid(self, code: str, message: str) -> ActionResult:
         return ActionResult(
             ok=False,
@@ -922,6 +1028,7 @@ class PokerEngine:
             name=seat.name,
             stack=seat.stack,
             contribution=seat.committed_this_hand,
+            is_sitting_out=seat.is_sitting_out,
             folded=seat.folded,
             all_in=seat.all_in,
             in_hand=seat.in_hand,
@@ -935,6 +1042,7 @@ class PokerEngine:
             name=seat.name,
             stack=seat.stack,
             hole_cards=tuple(seat.hole_cards),
+            is_sitting_out=seat.is_sitting_out,
             folded=seat.folded,
             all_in=seat.all_in,
             in_hand=seat.in_hand,
@@ -966,3 +1074,9 @@ class PokerEngine:
             return self._seat_by_id[seat_id]
         except KeyError as exc:
             raise KeyError(f"Unknown seat id: {seat_id}") from exc
+
+    def _seat_participation_payload(self, seat_id: str, *, reason: str | None) -> dict[str, str]:
+        payload = {"seat_id": seat_id}
+        if reason is not None:
+            payload["reason"] = reason
+        return payload

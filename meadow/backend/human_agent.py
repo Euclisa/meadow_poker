@@ -30,6 +30,10 @@ class BackendHumanAgent(PlayerAgent):
         return True
 
     @property
+    def auto_sit_out_on_timeout(self) -> bool:
+        return True
+
+    @property
     def pending_decision(self) -> DecisionRequest | None:
         if self._pending_state is None:
             return None
@@ -58,6 +62,12 @@ class BackendHumanAgent(PlayerAgent):
         self._pending_future = None
         self._pending_state = None
         await self._on_state_changed()
+
+    def cancel_pending(self, *, reason: str) -> bool:
+        if self._pending_future is None or self._pending_future.done():
+            return False
+        self._pending_future.cancel(reason)
+        return True
 
     def submit_action(self, action: PlayerAction) -> ActionValidationError | None:
         if self._pending_state is None or self._pending_future is None or self._pending_future.done():

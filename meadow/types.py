@@ -111,6 +111,7 @@ class SeatSnapshot:
     name: str
     stack: int
     contribution: int
+    is_sitting_out: bool
     folded: bool
     all_in: bool
     in_hand: bool
@@ -205,6 +206,7 @@ class HandSeatState:
     name: str
     stack: int
     hole_cards: tuple[str, ...]
+    is_sitting_out: bool
     folded: bool
     all_in: bool
     in_hand: bool

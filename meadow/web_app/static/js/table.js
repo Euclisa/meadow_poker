@@ -87,6 +87,8 @@ function bindDelegatedEvents() {
     if (target.id === "start-table-button") { performTableCommand("start"); return; }
     if (target.id === "cancel-table-button") { performTableCommand("cancel"); return; }
     if (target.id === "leave-table-button") { performTableCommand("leave"); return; }
+    if (target.id === "sit-out-button") { performTableCommand("sit-out"); return; }
+    if (target.id === "sit-in-button") { performTableCommand("sit-in"); return; }
     if (target.id === "coach-button") { requestCoachTip(); return; }
     if (target.id === "coach-bubble-close") {
       cancelCoachRequest();

@@ -313,14 +313,20 @@ function renderToolbar(
       <div class="action-dock__stage">
         <div class="action-dock__idle">
           <span class="action-dock__message">
-            ${controls.is_joined
-              ? "Waiting for your turn\u2026"
-              : escapeHtml(controls.join_disabled_reason || "Use your seat token to rejoin.")}
+            ${controls.is_paused
+              ? "Table is paused until at least two players are active."
+              : controls.is_sitting_out
+                ? "You are sitting out."
+                : controls.is_joined
+                  ? "Waiting for your turn\u2026"
+                  : escapeHtml(controls.join_disabled_reason || "Use your seat token to rejoin.")}
           </span>
           <div class="action-dock__side">
             ${controls.can_start ? `<button id="start-table-button" class="button button--primary" ${busy ? "disabled" : ""} type="button">Start</button>` : ""}
             ${controls.can_cancel ? `<button id="cancel-table-button" class="button button--ghost" ${busy ? "disabled" : ""} type="button">Cancel</button>` : ""}
             ${controls.can_leave ? `<button id="leave-table-button" class="button button--ghost" ${busy ? "disabled" : ""} type="button">Leave</button>` : ""}
+            ${!isActing && controls.can_sit_out ? `<button id="sit-out-button" class="button button--ghost" ${busy ? "disabled" : ""} type="button">Sit Out</button>` : ""}
+            ${controls.can_sit_in ? `<button id="sit-in-button" class="button button--primary" ${busy ? "disabled" : ""} type="button">Sit In</button>` : ""}
           </div>
         </div>
 
@@ -371,6 +377,7 @@ function renderToolbar(
                   </button>
                 `).join("")
               : ""}
+            ${isActing && controls.can_sit_out ? `<button id="sit-out-button" class="button button--ghost" ${busy ? "disabled" : ""} type="button">Sit Out</button>` : ""}
           </div>
         </div>
       </div>

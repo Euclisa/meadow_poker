@@ -175,7 +175,7 @@ def serialize_table_snapshot(
         "recent_events": _serialize_recent_events(runtime),
         "completed_hands": _serialize_completed_hands(runtime),
         "controls": _serialize_controls(runtime, viewer=viewer, has_pending_decision=pending_decision is not None),
-        "message": runtime.status_message,
+        "message": _snapshot_message(runtime),
         "showdown": _serialize_showdown(runtime.showdown_state),
     }
     if runtime.human_transport == "web":
@@ -248,10 +248,15 @@ def serialize_replay_snapshot(
             "viewer_name": viewer.actor.display_name if viewer is not None else None,
             "is_joined": viewer is not None,
             "is_creator": viewer is not None and runtime.is_creator_token(viewer.viewer_token),
+            "is_sitting_out": False,
+            "is_paused": False,
+            "pause_reason": None,
             "can_join": False,
             "can_start": False,
             "can_leave": False,
             "can_cancel": False,
+            "can_sit_out": False,
+            "can_sit_in": False,
             "can_act": False,
             "can_request_coach": analysis["eligible"] and runtime.coach is not None,
             "share_path": f"/table/{runtime.table_id}",
@@ -318,6 +323,7 @@ def snapshot_public_table_view(payload: dict[str, Any]) -> PublicTableView:
                 name=str(item["name"]),
                 stack=int(item["stack"]),
                 contribution=int(item["contribution"]),
+                is_sitting_out=bool(item.get("is_sitting_out", False)),
                 folded=bool(item["folded"]),
                 all_in=bool(item["all_in"]),
                 in_hand=bool(item["in_hand"]),
@@ -432,16 +438,26 @@ def _serialize_controls(
     token_valid = viewer is not None
     is_creator = viewer is not None and runtime.is_creator_token(viewer.viewer_token)
     viewer_is_seated = viewer is not None and viewer.is_seated
+    public_view = runtime.engine.get_public_table_view() if runtime.engine is not None else None
+    viewer_seat = None
+    if public_view is not None and viewer is not None and viewer.seat_id is not None:
+        viewer_seat = next((seat for seat in public_view.seats if seat.seat_id == viewer.seat_id), None)
     can_join = runtime.status.value == "waiting" and viewer is None and not runtime.is_full()
+    is_paused = public_view is not None and public_view.phase == GamePhase.WAITING_FOR_PLAYERS
     return {
         "seat_token_valid": token_valid,
         "viewer_name": viewer.actor.display_name if viewer is not None else None,
         "is_joined": viewer_is_seated,
         "is_creator": is_creator,
+        "is_sitting_out": viewer_seat.is_sitting_out if viewer_seat is not None else False,
+        "is_paused": is_paused,
+        "pause_reason": "waiting_for_players" if is_paused else None,
         "can_join": can_join,
         "can_start": token_valid and is_creator and runtime.status.value == "waiting" and (runtime.is_full() or runtime.human_seat_count == 0),
         "can_leave": viewer_is_seated and not is_creator and runtime.status.value == "waiting",
         "can_cancel": token_valid and is_creator and runtime.status.value == "waiting",
+        "can_sit_out": runtime.status.value == "running" and viewer_seat is not None and viewer_seat.stack > 0 and not viewer_seat.is_sitting_out,
+        "can_sit_in": runtime.status.value == "running" and viewer_seat is not None and viewer_seat.stack > 0 and viewer_seat.is_sitting_out,
         "can_act": has_pending_decision,
         "can_request_coach": has_pending_decision and runtime.coach is not None,
         "share_path": f"/table/{runtime.table_id}",
@@ -659,6 +675,14 @@ def _render_event_html(event: GameEvent, *, seat_names: dict[str, str] | None = 
         cards = escape(" ".join(payload.get("hole_cards", ())) or "-")
         hand_label = escape(payload["hand_label"])
         return f"{name} showed {cards} <i>({hand_label})</i>"
+    if event.event_type == "seat_sat_out":
+        return f"{name} is sitting out"
+    if event.event_type == "seat_sat_in":
+        return f"{name} is back in"
+    if event.event_type == "table_paused":
+        return "Table paused <i>(waiting for players)</i>"
+    if event.event_type == "table_resumed":
+        return "Table resumed"
     if event.event_type == "table_completed":
         reason = escape(payload.get("reason", "unknown").replace("_", " "))
         return f"Table finished <i>({reason})</i>"
@@ -670,7 +694,7 @@ def _render_event_html(event: GameEvent, *, seat_names: dict[str, str] | None = 
 def _event_kind(event: GameEvent) -> str:
     if event.event_type in {"pot_awarded", "hand_awarded", "chips_refunded"}:
         return "reward"
-    if event.event_type in {"action_applied", "ante_posted", "blind_posted", "showdown_revealed"}:
+    if event.event_type in {"action_applied", "ante_posted", "blind_posted", "showdown_revealed", "seat_sat_out", "seat_sat_in"}:
         return "action"
     return "state"
 
@@ -705,6 +729,7 @@ def _serialize_seat(seat: SeatSnapshot, *, is_viewer: bool) -> dict[str, Any]:
         "stack": seat.stack,
         "contribution": seat.contribution,
         "street_contribution": seat.street_contribution,
+        "is_sitting_out": seat.is_sitting_out,
         "folded": seat.folded,
         "all_in": seat.all_in,
         "in_hand": seat.in_hand,
@@ -771,3 +796,9 @@ def _empty_turn_timer() -> dict[str, Any]:
         "deadline_epoch_ms": None,
         "server_now_epoch_ms": int(time.time() * 1000),
     }
+
+
+def _snapshot_message(runtime: BackendTableRuntime) -> str:
+    if runtime.engine is not None and runtime.engine.get_phase() == GamePhase.WAITING_FOR_PLAYERS:
+        return "Waiting for at least two active players."
+    return runtime.status_message

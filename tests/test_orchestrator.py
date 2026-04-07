@@ -10,6 +10,7 @@ from meadow.poker.engine import PokerEngine
 from meadow.types import (
     ActionType,
     DecisionRequest,
+    GamePhase,
     HandRecordStatus,
     LegalAction,
     PlayerAction,
@@ -91,6 +92,12 @@ class SlowScriptedAgent(ScriptedAgent):
                 raise AssertionError(f"No scripted action left for {self.seat_id}")
             return self._actions.pop(0)
         return await super().request_action(decision)
+
+
+class SlowHumanScriptedAgent(SlowScriptedAgent):
+    @property
+    def auto_sit_out_on_timeout(self) -> bool:
+        return True
 
 
 class TimerInspectingAgent(ScriptedAgent):
@@ -455,6 +462,26 @@ def test_orchestrator_timeout_falls_back_to_fold_when_check_is_not_legal() -> No
     assert orchestrator.current_turn_timer is None
 
 
+def test_orchestrator_timeout_sits_out_human_agent() -> None:
+    agent_one = SlowHumanScriptedAgent(
+        "p1",
+        actions=[PlayerAction(ActionType.CALL)],
+        slow_indices={0},
+        delay_seconds=0.05,
+        keeps_table_alive=False,
+    )
+    agent_two = ScriptedAgent("p2", actions=[], keeps_table_alive=False)
+    orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
+    orchestrator.turn_timeout_seconds = 0.01
+
+    asyncio.run(orchestrator.run(max_hands=1, close_agents=False))
+
+    event_types = [event.event_type for event in orchestrator.event_log]
+    assert "seat_sat_out" in event_types
+    seat_state = next(seat for seat in orchestrator.engine.get_public_table_view().seats if seat.seat_id == "p1")
+    assert seat_state.is_sitting_out is True
+
+
 def test_orchestrator_timeout_falls_back_to_check_when_available() -> None:
     agent_one = SlowScriptedAgent(
         "p1",
@@ -537,6 +564,29 @@ def test_orchestrator_clears_timer_after_pending_turn_resolves() -> None:
         assert orchestrator.current_turn_timer is not None
         await task
         assert orchestrator.current_turn_timer is None
+
+    asyncio.run(scenario())
+
+
+def test_orchestrator_pauses_until_players_sit_back_in() -> None:
+    agent_one = ScriptedAgent("p1", actions=[PlayerAction(ActionType.FOLD)], keeps_table_alive=False)
+    agent_two = ScriptedAgent("p2", actions=[], keeps_table_alive=False)
+    orchestrator = make_heads_up_orchestrator(agent_one, agent_two)
+
+    async def scenario() -> None:
+        await orchestrator.sit_out_seat("p2", reason="manual")
+        task = asyncio.create_task(orchestrator.play_hand())
+        await asyncio.sleep(0.01)
+        assert any(event.event_type == "table_paused" for event in orchestrator.event_log)
+        assert orchestrator.engine.get_phase() == GamePhase.WAITING_FOR_PLAYERS
+
+        await orchestrator.sit_in_seat("p2", reason="manual")
+        result = await task
+
+        assert result.started is True
+        event_types = [event.event_type for event in orchestrator.event_log]
+        assert "table_resumed" in event_types
+        assert "hand_started" in event_types
 
     asyncio.run(scenario())
 

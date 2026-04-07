@@ -279,3 +279,49 @@ def test_remote_web_create_table_rejects_idle_close_shorter_than_turn_timeout() 
         assert "idle_close_seconds must be at least turn_timeout_seconds" in exc_info.value.text
 
     asyncio.run(scenario())
+
+
+def test_remote_web_can_sit_out_and_sit_back_in() -> None:
+    async def scenario() -> None:
+        service = make_backend_service()
+        app = make_remote_web_app(make_http_backend_client(service))
+
+        create_response = await app.handle_create_table(
+            FakeRequest(
+                payload={
+                    "display_name": "Alice",
+                    "total_seats": 2,
+                    "llm_seat_count": 0,
+                    "big_blind": 100,
+                    "stack_depth": 20,
+                    "turn_timeout_seconds": 30,
+                    "idle_close_seconds": 300,
+                }
+            )
+        )
+        created = decode_json_response(create_response)
+        table_id = created["table_id"]
+        alice_token = created["seat_token"]
+
+        join_response = await app.handle_join_table(
+            FakeRequest(match_info={"table_id": table_id}, payload={"display_name": "Bob"})
+        )
+        assert join_response.status == 200
+
+        await app.handle_start_table(
+            FakeRequest(match_info={"table_id": table_id}, payload={"seat_token": alice_token})
+        )
+
+        sit_out = await app.handle_sit_out(
+            FakeRequest(match_info={"table_id": table_id}, payload={"seat_token": alice_token})
+        )
+        sit_out_payload = decode_json_response(sit_out)
+        assert sit_out_payload["snapshot"]["controls"]["is_sitting_out"] is True
+
+        sit_in = await app.handle_sit_in(
+            FakeRequest(match_info={"table_id": table_id}, payload={"seat_token": alice_token})
+        )
+        sit_in_payload = decode_json_response(sit_in)
+        assert sit_in_payload["snapshot"]["controls"]["is_sitting_out"] is False
+
+    asyncio.run(scenario())

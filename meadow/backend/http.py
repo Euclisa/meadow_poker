@@ -55,6 +55,20 @@ class HttpBackendClient:
             json={"actor": actor_to_dict(actor), "viewer_token": viewer_token},
         )
 
+    async def sit_out(self, table_id: str, viewer_token: str) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/tables/{table_id}/sit-out",
+            json={"viewer_token": viewer_token},
+        )
+
+    async def sit_in(self, table_id: str, viewer_token: str) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/tables/{table_id}/sit-in",
+            json={"viewer_token": viewer_token},
+        )
+
     async def cancel_table(self, actor: ActorRef, table_id: str, viewer_token: str) -> dict[str, Any]:
         return await self._request(
             "POST",
@@ -201,6 +215,14 @@ def create_backend_http_app(service: Any) -> Any:
         actor = _actor_from_payload(payload["actor"])
         return web.json_response(await service.cancel_table(actor, request.match_info["table_id"], str(payload["viewer_token"])))
 
+    async def handle_sit_out(request: Any) -> Any:
+        payload = await request.json()
+        return web.json_response(await service.sit_out(request.match_info["table_id"], str(payload["viewer_token"])))
+
+    async def handle_sit_in(request: Any) -> Any:
+        payload = await request.json()
+        return web.json_response(await service.sit_in(request.match_info["table_id"], str(payload["viewer_token"])))
+
     async def handle_get_table(request: Any) -> Any:
         return web.json_response(await service.get_table_snapshot(request.match_info["table_id"], request.query.get("viewer_token")))
 
@@ -271,6 +293,8 @@ def create_backend_http_app(service: Any) -> Any:
     app.router.add_post("/tables/{table_id}/start", handle_start_table)
     app.router.add_post("/tables/{table_id}/leave", handle_leave_table)
     app.router.add_post("/tables/{table_id}/cancel", handle_cancel_table)
+    app.router.add_post("/tables/{table_id}/sit-out", handle_sit_out)
+    app.router.add_post("/tables/{table_id}/sit-in", handle_sit_in)
     app.router.add_get("/tables/{table_id}", handle_get_table)
     app.router.add_get("/tables/{table_id}/wait", handle_wait_table)
     app.router.add_post("/tables/{table_id}/actions", handle_submit_action)

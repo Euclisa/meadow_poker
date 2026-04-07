@@ -49,11 +49,19 @@ class BackendRuntimeManager:
         async def publish_state() -> None:
             await self._publisher.publish_runtime_state(runtime)
 
-        async def handle_turn_timeout(decision: DecisionRequest, action: PlayerAction) -> None:
+        async def handle_turn_timeout(
+            decision: DecisionRequest,
+            action: PlayerAction,
+            sat_out: bool,
+        ) -> None:
             del decision
             runtime.add_activity(
                 kind="state",
-                text=f"Time expired. Auto-{self._format_action_label(action)}.",
+                text=(
+                    "Time expired. Seat was put in sit out."
+                    if sat_out
+                    else f"Time expired. Auto-{self._format_action_label(action)}."
+                ),
             )
             await self._publisher.publish_runtime_state(runtime)
 

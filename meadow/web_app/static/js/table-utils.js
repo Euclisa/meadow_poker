@@ -71,6 +71,9 @@ export function seatBetSide(displayIndex, seatCount) {
 }
 
 export function seatStatusMeta(seat, actingSeatId) {
+  if (seat.is_sitting_out) {
+    return { label: "Sit out", tone: "wait" };
+  }
   if (seat.folded) {
     return { label: "Fold", tone: "fold" };
   }

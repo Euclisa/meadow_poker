@@ -89,6 +89,14 @@ def _render_telegram_event(
     if event.event_type == "showdown_revealed":
         cards = _telegram_cards(tuple(payload.get("hole_cards", ())))
         return ("action", f"🂠 {styled_name} showed <code>{cards}</code> ({escape(payload['hand_label'])})")
+    if event.event_type == "seat_sat_out":
+        return ("state", f"⏸️ {styled_name} is sitting out")
+    if event.event_type == "seat_sat_in":
+        return ("state", f"▶️ {styled_name} is back in")
+    if event.event_type == "table_paused":
+        return ("state", "⏸️ <b>Table paused</b> (waiting for players)")
+    if event.event_type == "table_resumed":
+        return ("state", "▶️ <b>Table resumed</b>")
     if event.event_type == "hand_completed":
         return ("state", f"✅ <b>Hand {payload['hand_number']}</b> completed")
     if event.event_type == "table_completed":

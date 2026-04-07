@@ -77,6 +77,8 @@ class WebApp:
         app.router.add_post("/api/tables/{table_id}/start", self.handle_start_table)
         app.router.add_post("/api/tables/{table_id}/leave", self.handle_leave_table)
         app.router.add_post("/api/tables/{table_id}/cancel", self.handle_cancel_table)
+        app.router.add_post("/api/tables/{table_id}/sit-out", self.handle_sit_out)
+        app.router.add_post("/api/tables/{table_id}/sit-in", self.handle_sit_in)
         app.router.add_post("/api/tables/{table_id}/action", self.handle_submit_action)
         app.router.add_post("/api/tables/{table_id}/coach", self.handle_request_coach)
         app.router.add_get("/api/tables/{table_id}/state", self.handle_table_state)
@@ -254,6 +256,30 @@ class WebApp:
         try:
             actor = await self._actor_for_viewer(table_id, seat_token)
             result = await self.backend.cancel_table(actor, table_id, seat_token)
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
+        return self._json_response({"ok": True, "snapshot": self._sanitize_snapshot(result["snapshot"])})
+
+    async def handle_sit_out(self, request: Any) -> Any:
+        payload = await self._read_json(request)
+        table_id = request.match_info["table_id"]
+        seat_token = self._normalize_token(payload.get("seat_token"))
+        if seat_token is None:
+            return self._error_response("A valid seat token is required.", status=403)
+        try:
+            result = await self.backend.sit_out(table_id, seat_token)
+        except BackendError as exc:
+            return self._error_response(exc.message, status=exc.status)
+        return self._json_response({"ok": True, "snapshot": self._sanitize_snapshot(result["snapshot"])})
+
+    async def handle_sit_in(self, request: Any) -> Any:
+        payload = await self._read_json(request)
+        table_id = request.match_info["table_id"]
+        seat_token = self._normalize_token(payload.get("seat_token"))
+        if seat_token is None:
+            return self._error_response("A valid seat token is required.", status=403)
+        try:
+            result = await self.backend.sit_in(table_id, seat_token)
         except BackendError as exc:
             return self._error_response(exc.message, status=exc.status)
         return self._json_response({"ok": True, "snapshot": self._sanitize_snapshot(result["snapshot"])})
