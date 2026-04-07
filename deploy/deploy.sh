@@ -103,8 +103,9 @@ for unit in "${UNIT_NAMES[@]}"; do
     echo "WARNING: unit file not found: ${src}" >&2
     continue
   fi
-  if ! diff -q "${src}" "${dst}" >/dev/null 2>&1; then
-    cp "${src}" "${dst}"
+  resolved=$(sed "s|@REPO_ROOT@|${REPO_ROOT}|g" "${src}")
+  if [[ ! -f "${dst}" ]] || [[ "${resolved}" != "$(cat "${dst}")" ]]; then
+    echo "${resolved}" > "${dst}"
     echo "  installed ${unit}.service"
     needs_reload=true
   fi

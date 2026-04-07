@@ -5,10 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=meadow
-Group=meadow
-WorkingDirectory=/home/meadow/app
-ExecStart=/home/meadow/app/.venv/bin/python -m meadow --config config/config.toml web
+WorkingDirectory=@REPO_ROOT@
+ExecStart=@REPO_ROOT@/.venv/bin/python -m meadow --config config/config.toml web
 Restart=always
 RestartSec=3
 
