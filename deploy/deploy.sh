@@ -88,10 +88,35 @@ if [[ "${RUN_TESTS}" == true ]]; then
     tests/test_main.py
 fi
 
-echo "Restarting services: ${ENABLED_SERVICES[*]}..."
 UNIT_NAMES=()
 for svc in "${ENABLED_SERVICES[@]}"; do
   UNIT_NAMES+=("meadow-${svc}")
+done
+
+echo "Installing unit files..."
+SYSTEMD_DIR=/etc/systemd/system
+needs_reload=false
+for unit in "${UNIT_NAMES[@]}"; do
+  src="${SCRIPT_DIR}/systemd/${unit}.service"
+  dst="${SYSTEMD_DIR}/${unit}.service"
+  if [[ ! -f "${src}" ]]; then
+    echo "WARNING: unit file not found: ${src}" >&2
+    continue
+  fi
+  if ! diff -q "${src}" "${dst}" >/dev/null 2>&1; then
+    cp "${src}" "${dst}"
+    echo "  installed ${unit}.service"
+    needs_reload=true
+  fi
+done
+
+if [[ "${needs_reload}" == true ]]; then
+  systemctl daemon-reload
+fi
+
+echo "Enabling and starting services: ${UNIT_NAMES[*]}..."
+for unit in "${UNIT_NAMES[@]}"; do
+  systemctl enable "${unit}"
 done
 systemctl restart "${UNIT_NAMES[@]}"
 
